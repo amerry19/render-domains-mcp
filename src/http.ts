@@ -16,7 +16,7 @@
  *   DELETE /mcp          → session termination
  */
 
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -88,21 +88,23 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 // MCP server + transport
 // ----------------------------------------------------------------------------
 
-const mcpServer = createMcpServer({ renderApiToken });
-const transport = new StreamableHTTPServerTransport({
-  sessionIdGenerator: () => randomUUID(),
-});
-await mcpServer.connect(transport);
+// Stateless mode (matches Render's own Python template `stateless_http=True`).
+// Each request gets a fresh transport + fresh server instance — no cross-request
+// state, no "Server already initialized" errors when multiple clients connect.
+async function handleMcpRequest(req: Request, res: Response, body?: unknown) {
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  const server = createMcpServer({ renderApiToken: renderApiToken! });
+  res.on("close", () => {
+    void transport.close();
+    void server.close();
+  });
+  await server.connect(transport);
+  await transport.handleRequest(req, res, body);
+}
 
-app.post("/mcp", async (req, res) => {
-  await transport.handleRequest(req, res, req.body);
-});
-app.get("/mcp", async (req, res) => {
-  await transport.handleRequest(req, res);
-});
-app.delete("/mcp", async (req, res) => {
-  await transport.handleRequest(req, res);
-});
+app.post("/mcp", (req, res) => void handleMcpRequest(req, res, req.body));
+app.get("/mcp", (req, res) => void handleMcpRequest(req, res));
+app.delete("/mcp", (req, res) => void handleMcpRequest(req, res));
 
 // ----------------------------------------------------------------------------
 // Listen
