@@ -2,7 +2,7 @@
 
 > An MCP server for Render custom domain management — closing the agent-loop gap that the official Render MCP leaves open.
 >
-> **Deployable on Render itself**, eating the platform's own dog food. See [Hosting on Render](#hosting-on-render).
+> **Live on Render: <https://render-domains-mcp.onrender.com/mcp>** — eating the platform's own dog food. See [Hosting on Render](#hosting-on-render).
 
 Render's official MCP server (`mcp.render.com/mcp`) exposes a strong read surface — services, deploys, logs, metrics, even direct Postgres SQL. But it stops short of custom domain management, so an AI agent helping a user deploy a site has to break the loop and send the user to the dashboard mid-flow. This POC fills that gap.
 
