@@ -1,0 +1,38 @@
+{
+  "name": "render-domains-mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing Render custom domain management — closing the agent-loop gap in Render's official MCP. POC built for a Growth EM interview at Render.",
+  "type": "module",
+  "bin": {
+    "render-domains-mcp": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/amerry19/render-domains-mcp.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "render",
+    "custom-domains",
+    "agentic"
+  ]
+}
