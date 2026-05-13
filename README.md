@@ -1,10 +1,19 @@
 # render-domains-mcp
 
 > An MCP server for Render custom domain management — closing the agent-loop gap that the official Render MCP leaves open.
+>
+> **Deployable on Render itself**, eating the platform's own dog food. See [Hosting on Render](#hosting-on-render).
 
 Render's official MCP server (`mcp.render.com/mcp`) exposes a strong read surface — services, deploys, logs, metrics, even direct Postgres SQL. But it stops short of custom domain management, so an AI agent helping a user deploy a site has to break the loop and send the user to the dashboard mid-flow. This POC fills that gap.
 
 It also demonstrates the **MCP Tasks pattern** for async operations like DNS verification, with a forward-compatible shape that maps 1:1 to the experimental `server.experimental.tasks.registerToolTask` API in `@modelcontextprotocol/sdk` v2.0.0-alpha (April 2026).
+
+## Two transports, one server
+
+- **stdio** (`npm start`) — for local Claude Code / Cursor / Codex use
+- **Streamable HTTP** (`npm run start:http`) — for hosted deployment, modeled after [Render's own Python MCP template](https://render.com/templates/mcp-server-python)
+
+Both share the same tool registrations via the factory in `src/server.ts`.
 
 ## Why this exists
 
@@ -58,7 +67,7 @@ Add to `~/.claude.json` under `mcpServers`:
 
 Then `/mcp` to connect.
 
-### Smoke test
+### Smoke test (stdio)
 
 ```bash
 RENDER_API_TOKEN=rnd_... npm start
@@ -70,6 +79,48 @@ Or pipe JSON-RPC directly:
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0.0.0"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}' | RENDER_API_TOKEN=rnd_... npm start
+```
+
+## Hosting on Render
+
+This server can be deployed on Render itself via the included [`render.yaml`](./render.yaml) Blueprint.
+
+### Auth model (matches Render's own MCP template)
+
+| Token | Set by | Used for |
+|---|---|---|
+| `MCP_API_TOKEN` | Render auto-generates on deploy (`generateValue: true`) | Bearer token the client (Claude Code, etc.) must present to access this MCP |
+| `RENDER_API_TOKEN` | You — set in Render dashboard once after Blueprint deploy | The token the server uses to call api.render.com on the user's behalf |
+
+When `MCP_API_TOKEN` is **unset** (e.g. running locally with `npm run start:http`), auth is **disabled** — useful for local dev only.
+
+### Deploy
+
+1. Push this repo to GitHub
+2. In Render dashboard: New → **Blueprint** → connect repo. Render reads `render.yaml`, auto-generates `MCP_API_TOKEN`.
+3. After deploy, set `RENDER_API_TOKEN` in the service's Environment tab.
+4. Grab `MCP_API_TOKEN` value from the Environment tab (Render shows it once-only).
+5. Configure your MCP client (Claude Code, Cursor, etc.):
+   ```json
+   {
+     "mcpServers": {
+       "render-domains": {
+         "transport": "http",
+         "url": "https://render-domains-mcp.onrender.com/mcp",
+         "headers": {
+           "Authorization": "Bearer <MCP_API_TOKEN>"
+         }
+       }
+     }
+   }
+   ```
+
+### Run HTTP mode locally
+
+```bash
+RENDER_API_TOKEN=rnd_... MCP_API_TOKEN=dev-secret PORT=10001 npm run start:http
+# server listens on http://localhost:10001/mcp
+# health probe: http://localhost:10001/health
 ```
 
 ## End-to-end flow (what an agent does)

@@ -1,0 +1,31 @@
+# Render Blueprint — deploys this MCP server as a hosted Web Service.
+#
+# Modeled after Render's own template at render-examples/mcp-server-python.
+#
+# On first deploy:
+#   1. Render auto-generates MCP_API_TOKEN (the bearer token clients must present)
+#   2. You set RENDER_API_TOKEN manually in the dashboard (the token the server
+#      uses to call api.render.com on the user's behalf)
+#   3. PORT is fixed; Render injects RENDER_EXTERNAL_HOSTNAME automatically
+#
+# Once deployed, the server URL is https://<service>.onrender.com/mcp
+# Configure clients (Claude Code, Cursor, etc.) with:
+#   - URL: https://<service>.onrender.com/mcp
+#   - Header: Authorization: Bearer <MCP_API_TOKEN value from Render dashboard>
+
+services:
+  - type: web
+    name: render-domains-mcp
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm run start:http
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: MCP_API_TOKEN
+        generateValue: true
+      - key: RENDER_API_TOKEN
+        sync: false
+      - key: PORT
+        value: "10000"
