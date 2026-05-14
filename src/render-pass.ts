@@ -55,6 +55,10 @@ export class RenderPassTokenStore {
   }
 
   issue(serviceId: string, requestedKeys: string[], description?: string): RenderPass {
+    // Opportunistic GC: clean up expired entries on each issue() so the Map
+    // doesn't grow unbounded over long server lifetimes.
+    this.gc();
+
     const token = randomBytes(24).toString("base64url");
     const pass: RenderPass = {
       token,
@@ -77,12 +81,32 @@ export class RenderPassTokenStore {
     return pass;
   }
 
-  /** Atomically claim a token. Marks used + returns the pass, or undefined. */
+  /**
+   * Atomically claim a token. Removes the entry from storage and returns
+   * the pass (single-use, write-once semantics). Returns undefined if the
+   * token is unknown, already used, or expired.
+   */
   consume(token: string): RenderPass | undefined {
     const pass = this.get(token);
     if (!pass) return undefined;
     pass.status = "used";
+    this.passes.delete(token);
     return pass;
+  }
+
+  /** Number of stored entries (regardless of status/expiry). For observability. */
+  size(): number {
+    return this.passes.size;
+  }
+
+  /** Delete entries older than the TTL. Called opportunistically by issue(). */
+  private gc(): void {
+    const cutoff = Date.now() - this.ttlMs;
+    for (const [token, pass] of this.passes) {
+      if (pass.issuedAt < cutoff) {
+        this.passes.delete(token);
+      }
+    }
   }
 }
 

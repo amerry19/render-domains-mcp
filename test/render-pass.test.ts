@@ -63,6 +63,39 @@ describe("RenderPassTokenStore", () => {
     expect(store.get(pass.token)).toBeUndefined();
     vi.useRealTimers();
   });
+
+  // ---- memory hygiene: actually delete entries from the Map, not just hide them ----
+
+  it("size() reports the number of stored passes", () => {
+    const store = new RenderPassTokenStore();
+    expect(store.size()).toBe(0);
+    store.issue("srv-1", ["A"]);
+    store.issue("srv-1", ["B"]);
+    expect(store.size()).toBe(2);
+  });
+
+  it("consume() deletes the entry from storage (not just marks used)", () => {
+    const store = new RenderPassTokenStore();
+    const pass = store.issue("srv-1", ["FOO"]);
+    expect(store.size()).toBe(1);
+    store.consume(pass.token);
+    expect(store.size()).toBe(0);
+  });
+
+  it("issue() sweeps expired entries (GC), preventing unbounded growth", () => {
+    vi.useFakeTimers();
+    const store = new RenderPassTokenStore({ ttlMs: 1000 });
+    store.issue("srv-1", ["A"]);
+    store.issue("srv-1", ["B"]);
+    expect(store.size()).toBe(2);
+
+    vi.advanceTimersByTime(2000);
+    // Issuing a new token should also clean up the expired ones
+    store.issue("srv-1", ["C"]);
+    expect(store.size()).toBe(1); // only the just-issued one survives
+
+    vi.useRealTimers();
+  });
 });
 
 // ----------------------------------------------------------------------------
