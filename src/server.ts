@@ -30,6 +30,7 @@ import {
   godaddyDnsSetCname,
   godaddySetupGuide,
 } from "./godaddy-tools.js";
+import { RenderPassTokenStore, renderPassRequest } from "./render-pass.js";
 
 export interface ServerOptions {
   /** Render API token used by the server to call api.render.com on behalf of the user. */
@@ -52,6 +53,13 @@ export interface ServerOptions {
    * state survives instance restarts and scales horizontally.
    */
   taskRegistry?: TaskRegistry;
+  /**
+   * Optional shared Render Pass token store. Required in stateless HTTP mode
+   * so the GET /render-pass/:token Express route can find the token an
+   * earlier `render_pass_request` tool call issued. Omitted in stdio mode
+   * (Render Pass needs a public URL, which stdio servers don't expose).
+   */
+  passTokenStore?: RenderPassTokenStore;
 }
 
 export function createMcpServer(opts: ServerOptions): McpServer {
@@ -69,12 +77,46 @@ export function createMcpServer(opts: ServerOptions): McpServer {
   registerSetupGuides(server);
   registerRenderTools(server, render, tasks);
 
+  // Render Pass: only registered when a token store is provided. In stdio
+  // mode we don't expose a public URL, so the feature wouldn't work.
+  if (opts.passTokenStore) {
+    registerRenderPassTool(server, opts.passTokenStore);
+  }
+
   if (opts.goDaddy) {
     const godaddy = new GoDaddyClient(opts.goDaddy.key, opts.goDaddy.secret);
     registerGoDaddyTools(server, godaddy);
   }
 
   return server;
+}
+
+function registerRenderPassTool(server: McpServer, store: RenderPassTokenStore): void {
+  server.registerTool(
+    "render_pass_request",
+    {
+      title: "Request a Render Pass (secure secret intake URL)",
+      description:
+        "Generate a one-time, expiring URL where the user can enter credentials in a browser form. " +
+        "The form submits directly to this MCP server, which writes the values into the target Render service's env vars. " +
+        "Use this for ANY secret (API keys, tokens, etc.) — values never pass through the agent's chat context. " +
+        "Surface the returned URL to the user and wait for them to confirm submission before continuing.",
+      inputSchema: {
+        serviceId: z.string().describe("Render service ID to write the env vars to"),
+        keys: z
+          .array(z.string())
+          .min(1)
+          .describe("Names of the env vars to collect, e.g. ['GODADDY_API_KEY', 'GODADDY_API_SECRET']"),
+        description: z
+          .string()
+          .optional()
+          .describe(
+            "Optional one-line context shown to the user above the form, e.g. 'Enable the GoDaddy adapter'"
+          ),
+      },
+    },
+    ({ serviceId, keys, description }) => renderPassRequest(store, { serviceId, keys, description })
+  );
 }
 
 // ----------------------------------------------------------------------------

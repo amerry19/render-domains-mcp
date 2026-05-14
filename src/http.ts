@@ -20,11 +20,18 @@ import { timingSafeEqual } from "node:crypto";
 
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import express from "express";
 import type { Request, Response, NextFunction } from "express";
 
 import { createMcpServer } from "./server.js";
 import { TaskRegistry } from "./tasks.js";
 import { loadGoDaddyConfig, requireEnv } from "./config.js";
+import { RenderClient } from "./render.js";
+import {
+  RenderPassTokenStore,
+  renderFormHtml,
+  renderResultHtml,
+} from "./render-pass.js";
 
 // ----------------------------------------------------------------------------
 // Env config
@@ -45,9 +52,71 @@ const allowedHosts = externalHost ? [externalHost, "localhost"] : undefined;
 
 const app = createMcpExpressApp({ host, allowedHosts });
 
+// urlencoded parser for the Render Pass form POST
+app.use(express.urlencoded({ extended: false, limit: "16kb" }));
+
 // Health check — must precede auth middleware so it's publicly reachable.
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", server: "render-domains-mcp", auth: mcpApiToken ? "enabled" : "disabled" });
+});
+
+// ----------------------------------------------------------------------------
+// Render Pass — browser intake routes (BEFORE auth middleware so the user's
+// browser can reach them without a bearer token; the token in the URL is the
+// auth)
+// ----------------------------------------------------------------------------
+
+const passTokenStore = new RenderPassTokenStore();
+const renderClient = new RenderClient(renderApiToken);
+
+app.get("/render-pass/:token", (req, res) => {
+  const pass = passTokenStore.get(req.params.token);
+  if (!pass) {
+    res.status(404).type("html").send(renderResultHtml({ ok: false }));
+    return;
+  }
+  res.type("html").send(
+    renderFormHtml({
+      token: pass.token,
+      requestedKeys: pass.requestedKeys,
+      description: pass.description,
+    })
+  );
+});
+
+app.post("/render-pass/:token", (req, res) => {
+  void (async () => {
+    const pass = passTokenStore.consume(req.params.token);
+    if (!pass) {
+      res.status(404).type("html").send(renderResultHtml({ ok: false }));
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, string>;
+    const secrets = pass.requestedKeys.map((key) => ({ key, value: body[key] ?? "" }));
+    const missing = secrets.filter((s) => !s.value);
+    if (missing.length > 0) {
+      res
+        .status(400)
+        .type("html")
+        .send(
+          renderResultHtml({
+            ok: false,
+            message: `Missing value(s) for: ${missing.map((m) => m.key).join(", ")}`,
+          })
+        );
+      return;
+    }
+    try {
+      await renderClient.setEnvVars(pass.serviceId, secrets);
+      res.type("html").send(renderResultHtml({ ok: true }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res
+        .status(500)
+        .type("html")
+        .send(renderResultHtml({ ok: false, message: `Failed to write env vars: ${message}` }));
+    }
+  })();
 });
 
 const UNAUTHORIZED = {
@@ -91,6 +160,7 @@ async function handleMcpRequest(req: Request, res: Response, body?: unknown): Pr
   const server = createMcpServer({
     renderApiToken,
     taskRegistry: sharedTaskRegistry,
+    passTokenStore,
     goDaddy,
   });
   res.on("close", () => {

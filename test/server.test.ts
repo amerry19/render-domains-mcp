@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { createMcpServer } from "../src/server.js";
+import { RenderPassTokenStore } from "../src/render-pass.js";
 
 /**
  * We test the factory by patching McpServer.prototype.registerTool so we can
@@ -60,6 +61,22 @@ describe("createMcpServer", () => {
     expect(names).toContain("godaddy_dns_set_cname");
     expect(names).toContain("godaddy_dns_delete");
     expect(names.length).toBe(13); // 7 render-domains + render_secrets_set + 2 guides + 3 godaddy
+  });
+
+  it("adds render_pass_request when passTokenStore is provided (HTTP mode)", () => {
+    createMcpServer({
+      renderApiToken: "rnd_test",
+      passTokenStore: new RenderPassTokenStore(),
+    });
+
+    const names = captured.map((c) => c.name);
+    expect(names).toContain("render_pass_request");
+  });
+
+  it("does NOT register render_pass_request when no store (stdio mode default)", () => {
+    createMcpServer({ renderApiToken: "rnd_test" });
+    const names = captured.map((c) => c.name);
+    expect(names).not.toContain("render_pass_request");
   });
 
   it("registers godaddy_setup_guide even without creds (so agent can onboard the user)", () => {
