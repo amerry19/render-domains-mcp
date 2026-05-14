@@ -17,5 +17,5 @@ const goDaddy = loadGoDaddyConfig();
 const server = createMcpServer({ renderApiToken, goDaddy });
 await server.connect(new StdioServerTransport());
 
-const toolCount = 7 + (goDaddy ? 3 : 0);
+const toolCount = 9 + (goDaddy ? 3 : 0); // 7 render + 2 setup guides (+ 3 godaddy when enabled)
 console.error(`[render-domains-mcp] stdio server ready (${toolCount} tools${goDaddy ? "; GoDaddy adapter enabled" : ""})`);

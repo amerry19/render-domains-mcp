@@ -156,3 +156,42 @@ export function renderDomainsVerifyStatus(
     updatedAt: task.updatedAt,
   });
 }
+
+/**
+ * Returns markdown explaining how to get a Render API token and find a
+ * service ID. Useful for first-time onboarding — the agent can call this
+ * tool to teach a user about the inputs the rest of the Render tools need.
+ */
+export function renderSetupGuide(): McpTextContent {
+  const text = `# Render API Credentials Setup
+
+This MCP server talks to Render's REST API on your behalf. To configure it you need two things: an API token and the service ID you want to manage custom domains for.
+
+## 1. Generate an API token
+
+1. **Open** https://dashboard.render.com/u/settings#api-keys
+2. **Click** "Create API Key"
+3. **Name** it something descriptive (e.g. \`render-domains-mcp\`)
+4. **Copy the token** (starts with \`rnd_...\`) — it's shown once only
+
+## 2. Find your service ID
+
+1. **Open** https://dashboard.render.com/services
+2. **Click** the service you want to manage (web service or static site)
+3. **Copy the ID** from the URL — format: \`srv-...\` (e.g. \`srv-d81l8apo3t8c739e1nlg\`)
+
+You can also call \`mcp__render__list_services\` from the official Render MCP if it's connected — it returns all services with their IDs.
+
+## 3. How to use these
+
+- **Local stdio mode** (Claude Code / Cursor / Codex):
+  Set \`RENDER_API_TOKEN=rnd_...\` in your shell before running the server.
+
+- **Hosted HTTP mode** (this MCP running on Render itself):
+  Set \`RENDER_API_TOKEN\` as an env var on the service via the official Render MCP's \`update_environment_variables\` — no dashboard handoff required.
+
+## Security
+
+Render API tokens have full account access by default. Treat them like a password. Rotate or revoke individual keys from the dashboard.`;
+  return { content: [{ type: "text", text }] };
+}

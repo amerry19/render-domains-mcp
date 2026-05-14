@@ -20,12 +20,14 @@ import {
   renderDomainsRemove,
   renderDomainsVerify,
   renderDomainsVerifyStatus,
+  renderSetupGuide,
 } from "./render-tools.js";
 import { renderDomainsDnsCheck } from "./dns.js";
 import {
   godaddyDnsDelete,
   godaddyDnsList,
   godaddyDnsSetCname,
+  godaddySetupGuide,
 } from "./godaddy-tools.js";
 
 export interface ServerOptions {
@@ -60,6 +62,10 @@ export function createMcpServer(opts: ServerOptions): McpServer {
     version: "0.1.0",
   });
 
+  // Setup guides are always registered (even without GoDaddy creds) so the
+  // agent can guide a brand-new user through credential setup without a
+  // dashboard handoff.
+  registerSetupGuides(server);
   registerRenderTools(server, render, tasks);
 
   if (opts.goDaddy) {
@@ -68,6 +74,36 @@ export function createMcpServer(opts: ServerOptions): McpServer {
   }
 
   return server;
+}
+
+// ----------------------------------------------------------------------------
+// Setup guides — unconditionally registered, no credentials required
+// ----------------------------------------------------------------------------
+
+function registerSetupGuides(server: McpServer): void {
+  server.registerTool(
+    "render_setup_guide",
+    {
+      title: "Render setup guide",
+      description:
+        "Returns markdown explaining how to generate a Render API token and find a service ID. " +
+        "Call this when a user is configuring this MCP for the first time, or when they ask 'how do I get a Render API key'.",
+      inputSchema: {},
+    },
+    () => renderSetupGuide()
+  );
+
+  server.registerTool(
+    "godaddy_setup_guide",
+    {
+      title: "GoDaddy setup guide",
+      description:
+        "Returns markdown walking a user through generating a GoDaddy Production API key + secret, and instructions for wiring the credentials into this MCP server's env vars via the official Render MCP's `update_environment_variables` tool. " +
+        "Call this when the user wants to enable the GoDaddy adapter and the relevant env vars are not yet set.",
+      inputSchema: {},
+    },
+    () => godaddySetupGuide()
+  );
 }
 
 // ----------------------------------------------------------------------------
