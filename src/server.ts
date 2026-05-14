@@ -14,18 +14,18 @@ import { RenderClient } from "./render.js";
 import { TaskRegistry } from "./tasks.js";
 import { GoDaddyClient } from "./godaddy.js";
 import {
-  renderDomainsAddLogic,
-  renderDomainsGetLogic,
-  renderDomainsListLogic,
-  renderDomainsRemoveLogic,
-  renderDomainsVerifyLogic,
-  renderDomainsVerifyStatusLogic,
+  renderDomainsAdd,
+  renderDomainsGet,
+  renderDomainsList,
+  renderDomainsRemove,
+  renderDomainsVerify,
+  renderDomainsVerifyStatus,
 } from "./render-tools.js";
-import { renderDomainsDnsCheckLogic } from "./dns.js";
+import { renderDomainsDnsCheck } from "./dns.js";
 import {
-  godaddyDnsDeleteLogic,
-  godaddyDnsListLogic,
-  godaddyDnsSetCnameLogic,
+  godaddyDnsDelete,
+  godaddyDnsList,
+  godaddyDnsSetCname,
 } from "./godaddy-tools.js";
 
 export interface ServerOptions {
@@ -84,7 +84,7 @@ function registerRenderTools(server: McpServer, render: RenderClient, tasks: Tas
         serviceId: z.string().describe("Render service ID, e.g. srv-d81l8apo3t8c739e1nlg"),
       },
     },
-    ({ serviceId }) => renderDomainsListLogic(render, { serviceId })
+    ({ serviceId }) => renderDomainsList(render, { serviceId })
   );
 
   server.registerTool(
@@ -97,7 +97,7 @@ function registerRenderTools(server: McpServer, render: RenderClient, tasks: Tas
         domainId: z.string().describe("Custom domain ID, e.g. cdm-..."),
       },
     },
-    ({ serviceId, domainId }) => renderDomainsGetLogic(render, { serviceId, domainId })
+    ({ serviceId, domainId }) => renderDomainsGet(render, { serviceId, domainId })
   );
 
   server.registerTool(
@@ -111,7 +111,7 @@ function registerRenderTools(server: McpServer, render: RenderClient, tasks: Tas
         name: z.string().describe("Fully-qualified domain to attach, e.g. example.com or www.example.com"),
       },
     },
-    ({ serviceId, name }) => renderDomainsAddLogic(render, { serviceId, name })
+    ({ serviceId, name }) => renderDomainsAdd(render, { serviceId, name })
   );
 
   server.registerTool(
@@ -124,7 +124,7 @@ function registerRenderTools(server: McpServer, render: RenderClient, tasks: Tas
         domainId: z.string().describe("Custom domain ID to remove"),
       },
     },
-    ({ serviceId, domainId }) => renderDomainsRemoveLogic(render, { serviceId, domainId })
+    ({ serviceId, domainId }) => renderDomainsRemove(render, { serviceId, domainId })
   );
 
   server.registerTool(
@@ -148,7 +148,7 @@ function registerRenderTools(server: McpServer, render: RenderClient, tasks: Tas
       },
     },
     ({ serviceId, domainId, timeoutSeconds }) =>
-      renderDomainsVerifyLogic(render, tasks, { serviceId, domainId, timeoutSeconds })
+      renderDomainsVerify(render, tasks, { serviceId, domainId, timeoutSeconds })
   );
 
   server.registerTool(
@@ -161,7 +161,7 @@ function registerRenderTools(server: McpServer, render: RenderClient, tasks: Tas
         taskId: z.string().describe("Task ID returned from render_domains_verify"),
       },
     },
-    ({ taskId }) => renderDomainsVerifyStatusLogic(tasks, { taskId })
+    ({ taskId }) => renderDomainsVerifyStatus(tasks, { taskId })
   );
 
   server.registerTool(
@@ -179,7 +179,7 @@ function registerRenderTools(server: McpServer, render: RenderClient, tasks: Tas
           .describe("Expected target IP or hostname. Defaults to Render's static site A record 216.24.57.1."),
       },
     },
-    ({ domain, expectedTarget }) => renderDomainsDnsCheckLogic({ domain, expectedTarget })
+    ({ domain, expectedTarget }) => renderDomainsDnsCheck({ domain, expectedTarget })
   );
 }
 
@@ -207,7 +207,7 @@ function registerGoDaddyTools(server: McpServer, godaddy: GoDaddyClient): void {
           .describe("Filter by record name (e.g. 'www' or '@' for the apex)"),
       },
     },
-    ({ domain, type, name }) => godaddyDnsListLogic(godaddy, { domain, type, name })
+    ({ domain, type, name }) => godaddyDnsList(godaddy, { domain, type, name })
   );
 
   server.registerTool(
@@ -231,7 +231,7 @@ function registerGoDaddyTools(server: McpServer, godaddy: GoDaddyClient): void {
       },
     },
     ({ domain, name, target, ttl }) =>
-      godaddyDnsSetCnameLogic(godaddy, { domain, name, target, ttl })
+      godaddyDnsSetCname(godaddy, { domain, name, target, ttl })
   );
 
   server.registerTool(
@@ -246,6 +246,6 @@ function registerGoDaddyTools(server: McpServer, godaddy: GoDaddyClient): void {
         name: z.string().describe("Record name to delete (e.g. 'test-mcp')"),
       },
     },
-    ({ domain, type, name }) => godaddyDnsDeleteLogic(godaddy, { domain, type, name })
+    ({ domain, type, name }) => godaddyDnsDelete(godaddy, { domain, type, name })
   );
 }

@@ -24,42 +24,37 @@ import type { Request, Response, NextFunction } from "express";
 
 import { createMcpServer } from "./server.js";
 import { TaskRegistry } from "./tasks.js";
+import { loadGoDaddyConfig, requireEnv } from "./config.js";
 
 // ----------------------------------------------------------------------------
-// Config from env
+// Env config
 // ----------------------------------------------------------------------------
 
-const renderApiToken = process.env.RENDER_API_TOKEN;
-if (!renderApiToken) {
-  console.error("[render-domains-mcp] ERROR: RENDER_API_TOKEN env var is required.");
-  process.exit(1);
-}
-
+const renderApiToken = requireEnv("RENDER_API_TOKEN");
 const mcpApiToken = process.env.MCP_API_TOKEN; // optional — when set, enables bearer auth
+const goDaddy = loadGoDaddyConfig();
 
-// Optional GoDaddy adapter — both vars must be present to enable
-const godaddyKey = process.env.GODADDY_API_KEY;
-const godaddySecret = process.env.GODADDY_API_SECRET;
-const goDaddy = godaddyKey && godaddySecret ? { key: godaddyKey, secret: godaddySecret } : undefined;
 const port = Number.parseInt(process.env.PORT ?? "10000", 10);
 const host = "0.0.0.0";
-const externalHost = process.env.RENDER_EXTERNAL_HOSTNAME; // Render injects this
+const externalHost = process.env.RENDER_EXTERNAL_HOSTNAME; // Render injects this on deploy
 const allowedHosts = externalHost ? [externalHost, "localhost"] : undefined;
 
 // ----------------------------------------------------------------------------
-// Express app with DNS rebinding protection (from MCP SDK)
+// Express app + bearer auth
 // ----------------------------------------------------------------------------
 
 const app = createMcpExpressApp({ host, allowedHosts });
 
-// Health check — must come BEFORE auth middleware so it's publicly reachable
+// Health check — must precede auth middleware so it's publicly reachable.
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", server: "render-domains-mcp", auth: mcpApiToken ? "enabled" : "disabled" });
 });
 
-// ----------------------------------------------------------------------------
-// Bearer auth middleware (timing-safe)
-// ----------------------------------------------------------------------------
+const UNAUTHORIZED = {
+  jsonrpc: "2.0",
+  error: { code: -32001, message: "Unauthorized" },
+  id: null,
+} as const;
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (req.path === "/health") return next();
@@ -68,45 +63,33 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   const provided = req.header("Authorization") ?? "";
   const expected = `Bearer ${mcpApiToken}`;
 
-  // Length check before timingSafeEqual (which requires equal-length buffers)
+  // Length check before timingSafeEqual (which requires equal-length buffers).
   if (provided.length !== expected.length) {
-    return res.status(401).json({
-      jsonrpc: "2.0",
-      error: { code: -32001, message: "Unauthorized" },
-      id: null,
-    });
+    return res.status(401).json(UNAUTHORIZED);
   }
-
-  const providedBuf = Buffer.from(provided);
-  const expectedBuf = Buffer.from(expected);
-  if (!timingSafeEqual(providedBuf, expectedBuf)) {
-    return res.status(401).json({
-      jsonrpc: "2.0",
-      error: { code: -32001, message: "Unauthorized" },
-      id: null,
-    });
+  if (!timingSafeEqual(Buffer.from(provided), Buffer.from(expected))) {
+    return res.status(401).json(UNAUTHORIZED);
   }
 
   next();
 });
 
 // ----------------------------------------------------------------------------
-// MCP server + transport
+// MCP server + stateless Streamable HTTP transport
 // ----------------------------------------------------------------------------
 
-// Module-scoped TaskRegistry: survives across requests (needed for the verify
-// task pattern where verify_status must find the task created by verify).
-// In a multi-instance deploy this would need to move to Render KV or Postgres.
+// Module-scoped: survives across requests so verify_status can find the task
+// created by an earlier verify call. For multi-instance deploys, swap for
+// Render KV or Postgres-backed storage.
 const sharedTaskRegistry = new TaskRegistry();
 
-// Stateless transport (matches Render's own Python template `stateless_http=True`).
-// Each request gets a fresh transport + fresh server instance — no cross-request
-// PROTOCOL state, no "Server already initialized" errors when multiple clients
-// connect. App-level state (tasks) lives in the shared module-scope registry.
-async function handleMcpRequest(req: Request, res: Response, body?: unknown) {
+// Each request gets its own transport + server (stateless mode, matching
+// Render's own Python template). Avoids "Server already initialized" when
+// multiple clients connect; app-level state lives in sharedTaskRegistry.
+async function handleMcpRequest(req: Request, res: Response, body?: unknown): Promise<void> {
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   const server = createMcpServer({
-    renderApiToken: renderApiToken!,
+    renderApiToken,
     taskRegistry: sharedTaskRegistry,
     goDaddy,
   });
@@ -128,8 +111,11 @@ app.delete("/mcp", (req, res) => void handleMcpRequest(req, res));
 
 app.listen(port, host, () => {
   console.error(`[render-domains-mcp] HTTP server listening on ${host}:${port}`);
-  console.error(`[render-domains-mcp] auth: ${mcpApiToken ? "enabled (Bearer)" : "DISABLED (no MCP_API_TOKEN set — local dev only!)"}`);
-  if (externalHost) {
-    console.error(`[render-domains-mcp] external URL: https://${externalHost}/mcp`);
-  }
+  console.error(
+    `[render-domains-mcp] auth: ${
+      mcpApiToken ? "enabled (Bearer)" : "DISABLED (no MCP_API_TOKEN set — local dev only!)"
+    }`
+  );
+  if (goDaddy) console.error("[render-domains-mcp] GoDaddy adapter enabled");
+  if (externalHost) console.error(`[render-domains-mcp] external URL: https://${externalHost}/mcp`);
 });

@@ -28,7 +28,7 @@ export interface DnsDeleteArgs {
   name: string;
 }
 
-export async function godaddyDnsListLogic(
+export async function godaddyDnsList(
   client: GoDaddyClient,
   args: DnsListArgs
 ): Promise<McpTextContent> {
@@ -40,7 +40,7 @@ export async function godaddyDnsListLogic(
   }
 }
 
-export async function godaddyDnsSetCnameLogic(
+export async function godaddyDnsSetCname(
   client: GoDaddyClient,
   args: DnsSetCnameArgs
 ): Promise<McpTextContent> {
@@ -62,7 +62,7 @@ export async function godaddyDnsSetCnameLogic(
   }
 }
 
-export async function godaddyDnsDeleteLogic(
+export async function godaddyDnsDelete(
   client: GoDaddyClient,
   args: DnsDeleteArgs
 ): Promise<McpTextContent> {

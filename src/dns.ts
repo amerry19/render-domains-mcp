@@ -35,7 +35,7 @@ async function resolveDoh(name: string, type: "A" | "CNAME"): Promise<string[]> 
  * The DNS check tool handler. Pure function — takes an optional resolver
  * for dependency injection in tests; defaults to the real DoH client.
  */
-export async function renderDomainsDnsCheckLogic(
+export async function renderDomainsDnsCheck(
   args: DnsCheckArgs,
   resolver: DohResolver = resolveDoh
 ): Promise<McpTextContent> {

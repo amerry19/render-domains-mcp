@@ -48,7 +48,7 @@ export interface VerifyStatusArgs {
 // Handlers
 // ----------------------------------------------------------------------------
 
-export async function renderDomainsListLogic(
+export async function renderDomainsList(
   client: RenderClient,
   args: ListArgs
 ): Promise<McpTextContent> {
@@ -60,7 +60,7 @@ export async function renderDomainsListLogic(
   }
 }
 
-export async function renderDomainsGetLogic(
+export async function renderDomainsGet(
   client: RenderClient,
   args: GetArgs
 ): Promise<McpTextContent> {
@@ -72,7 +72,7 @@ export async function renderDomainsGetLogic(
   }
 }
 
-export async function renderDomainsAddLogic(
+export async function renderDomainsAdd(
   client: RenderClient,
   args: AddArgs
 ): Promise<McpTextContent> {
@@ -94,7 +94,7 @@ export async function renderDomainsAddLogic(
   }
 }
 
-export async function renderDomainsRemoveLogic(
+export async function renderDomainsRemove(
   client: RenderClient,
   args: RemoveArgs
 ): Promise<McpTextContent> {
@@ -106,7 +106,7 @@ export async function renderDomainsRemoveLogic(
   }
 }
 
-export async function renderDomainsVerifyLogic(
+export async function renderDomainsVerify(
   client: RenderClient,
   registry: TaskRegistry,
   args: VerifyArgs
@@ -134,7 +134,7 @@ export async function renderDomainsVerifyLogic(
   }
 }
 
-export function renderDomainsVerifyStatusLogic(
+export function renderDomainsVerifyStatus(
   registry: TaskRegistry,
   args: VerifyStatusArgs
 ): McpTextContent {

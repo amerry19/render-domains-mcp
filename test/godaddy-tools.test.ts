@@ -2,9 +2,9 @@ import { describe, it, expect, vi } from "vitest";
 
 import { GoDaddyApiError, type DnsRecord } from "../src/godaddy.js";
 import {
-  godaddyDnsListLogic,
-  godaddyDnsSetCnameLogic,
-  godaddyDnsDeleteLogic,
+  godaddyDnsList,
+  godaddyDnsSetCname,
+  godaddyDnsDelete,
 } from "../src/godaddy-tools.js";
 
 interface FakeClient {
@@ -31,11 +31,11 @@ const RECORDS: DnsRecord[] = [
   { type: "CNAME", name: "www", data: "example.com", ttl: 3600 },
 ];
 
-describe("godaddyDnsListLogic", () => {
+describe("godaddyDnsList", () => {
   it("returns count and records from the client", async () => {
     const client = fakeClient({ listRecords: vi.fn().mockResolvedValue(RECORDS) });
 
-    const result = await godaddyDnsListLogic(client as never, { domain: "example.com" });
+    const result = await godaddyDnsList(client as never, { domain: "example.com" });
 
     expect(client.listRecords).toHaveBeenCalledWith("example.com", { type: undefined, name: undefined });
     expect(parsedBody(result)).toEqual({ count: 2, records: RECORDS });
@@ -43,7 +43,7 @@ describe("godaddyDnsListLogic", () => {
 
   it("forwards type + name filters to the client", async () => {
     const client = fakeClient();
-    await godaddyDnsListLogic(client as never, { domain: "example.com", type: "CNAME", name: "www" });
+    await godaddyDnsList(client as never, { domain: "example.com", type: "CNAME", name: "www" });
     expect(client.listRecords).toHaveBeenCalledWith("example.com", { type: "CNAME", name: "www" });
   });
 
@@ -52,7 +52,7 @@ describe("godaddyDnsListLogic", () => {
       listRecords: vi.fn().mockRejectedValue(new GoDaddyApiError(401, "bad key", "auth failed")),
     });
 
-    const result = await godaddyDnsListLogic(client as never, { domain: "example.com" });
+    const result = await godaddyDnsList(client as never, { domain: "example.com" });
 
     expect((result as { isError?: boolean }).isError).toBe(true);
     const body = parsedBody(result) as { error: string; godaddyStatus: number };
@@ -61,11 +61,11 @@ describe("godaddyDnsListLogic", () => {
   });
 });
 
-describe("godaddyDnsSetCnameLogic", () => {
+describe("godaddyDnsSetCname", () => {
   it("calls upsertCname with name+target and reports success", async () => {
     const client = fakeClient();
 
-    const result = await godaddyDnsSetCnameLogic(client as never, {
+    const result = await godaddyDnsSetCname(client as never, {
       domain: "example.com",
       name: "test-mcp",
       target: "myapp.onrender.com",
@@ -79,7 +79,7 @@ describe("godaddyDnsSetCnameLogic", () => {
 
   it("passes a custom TTL through", async () => {
     const client = fakeClient();
-    await godaddyDnsSetCnameLogic(client as never, {
+    await godaddyDnsSetCname(client as never, {
       domain: "example.com",
       name: "test-mcp",
       target: "myapp.onrender.com",
@@ -93,7 +93,7 @@ describe("godaddyDnsSetCnameLogic", () => {
       upsertCname: vi.fn().mockRejectedValue(new Error("network")),
     });
 
-    const result = await godaddyDnsSetCnameLogic(client as never, {
+    const result = await godaddyDnsSetCname(client as never, {
       domain: "example.com",
       name: "test",
       target: "x.onrender.com",
@@ -103,11 +103,11 @@ describe("godaddyDnsSetCnameLogic", () => {
   });
 });
 
-describe("godaddyDnsDeleteLogic", () => {
+describe("godaddyDnsDelete", () => {
   it("calls deleteRecords with the right args", async () => {
     const client = fakeClient();
 
-    const result = await godaddyDnsDeleteLogic(client as never, {
+    const result = await godaddyDnsDelete(client as never, {
       domain: "example.com",
       type: "CNAME",
       name: "test-mcp",
@@ -123,7 +123,7 @@ describe("godaddyDnsDeleteLogic", () => {
       deleteRecords: vi.fn().mockRejectedValue(new GoDaddyApiError(404, "no such record", "Not Found")),
     });
 
-    const result = await godaddyDnsDeleteLogic(client as never, {
+    const result = await godaddyDnsDelete(client as never, {
       domain: "example.com",
       type: "CNAME",
       name: "missing",

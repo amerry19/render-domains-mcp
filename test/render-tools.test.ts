@@ -3,12 +3,12 @@ import { describe, it, expect, vi } from "vitest";
 import { RenderApiError, type CustomDomain } from "../src/render.js";
 import { TaskRegistry } from "../src/tasks.js";
 import {
-  renderDomainsAddLogic,
-  renderDomainsGetLogic,
-  renderDomainsListLogic,
-  renderDomainsRemoveLogic,
-  renderDomainsVerifyLogic,
-  renderDomainsVerifyStatusLogic,
+  renderDomainsAdd,
+  renderDomainsGet,
+  renderDomainsList,
+  renderDomainsRemove,
+  renderDomainsVerify,
+  renderDomainsVerifyStatus,
 } from "../src/render-tools.js";
 
 interface FakeClient {
@@ -46,10 +46,10 @@ const APEX: CustomDomain = {
 
 const SUBDOMAIN: CustomDomain = { ...APEX, id: "cdm-www", name: "www.example.com", domainType: "subdomain" };
 
-describe("renderDomainsListLogic", () => {
+describe("renderDomainsList", () => {
   it("returns count + domains", async () => {
     const client = fakeClient({ listDomains: vi.fn().mockResolvedValue([APEX, SUBDOMAIN]) });
-    const result = await renderDomainsListLogic(client as never, { serviceId: "srv-1" });
+    const result = await renderDomainsList(client as never, { serviceId: "srv-1" });
     expect(parsedBody(result)).toEqual({ count: 2, domains: [APEX, SUBDOMAIN] });
   });
 
@@ -57,16 +57,16 @@ describe("renderDomainsListLogic", () => {
     const client = fakeClient({
       listDomains: vi.fn().mockRejectedValue(new RenderApiError(401, "bad", "unauthorized")),
     });
-    const result = await renderDomainsListLogic(client as never, { serviceId: "srv-1" });
+    const result = await renderDomainsList(client as never, { serviceId: "srv-1" });
     expect((result as { isError?: boolean }).isError).toBe(true);
     expect((parsedBody(result) as { renderStatus: number }).renderStatus).toBe(401);
   });
 });
 
-describe("renderDomainsGetLogic", () => {
+describe("renderDomainsGet", () => {
   it("returns the domain object", async () => {
     const client = fakeClient({ getDomain: vi.fn().mockResolvedValue(APEX) });
-    const result = await renderDomainsGetLogic(client as never, { serviceId: "srv", domainId: "cdm-apex" });
+    const result = await renderDomainsGet(client as never, { serviceId: "srv", domainId: "cdm-apex" });
     expect(parsedBody(result)).toEqual(APEX);
   });
 
@@ -74,15 +74,15 @@ describe("renderDomainsGetLogic", () => {
     const client = fakeClient({
       getDomain: vi.fn().mockRejectedValue(new RenderApiError(404, "", "not found")),
     });
-    const result = await renderDomainsGetLogic(client as never, { serviceId: "srv", domainId: "cdm-x" });
+    const result = await renderDomainsGet(client as never, { serviceId: "srv", domainId: "cdm-x" });
     expect((result as { isError?: boolean }).isError).toBe(true);
   });
 });
 
-describe("renderDomainsAddLogic", () => {
+describe("renderDomainsAdd", () => {
   it("returns the new domain + apex-specific next steps", async () => {
     const client = fakeClient({ addDomain: vi.fn().mockResolvedValue(APEX) });
-    const result = await renderDomainsAddLogic(client as never, { serviceId: "srv", name: "example.com" });
+    const result = await renderDomainsAdd(client as never, { serviceId: "srv", name: "example.com" });
     const body = parsedBody(result) as { domain: CustomDomain; nextSteps: string[] };
     expect(body.domain).toEqual(APEX);
     expect(body.nextSteps[0]).toContain("A record");
@@ -91,34 +91,34 @@ describe("renderDomainsAddLogic", () => {
 
   it("gives CNAME guidance for subdomain types", async () => {
     const client = fakeClient({ addDomain: vi.fn().mockResolvedValue(SUBDOMAIN) });
-    const result = await renderDomainsAddLogic(client as never, { serviceId: "srv", name: "www.example.com" });
+    const result = await renderDomainsAdd(client as never, { serviceId: "srv", name: "www.example.com" });
     const body = parsedBody(result) as { nextSteps: string[] };
     expect(body.nextSteps[0]).toContain("CNAME");
     expect(body.nextSteps[0]).toContain("www");
   });
 });
 
-describe("renderDomainsRemoveLogic", () => {
+describe("renderDomainsRemove", () => {
   it("acks removal with the domainId", async () => {
     const client = fakeClient();
-    const result = await renderDomainsRemoveLogic(client as never, { serviceId: "srv", domainId: "cdm-x" });
+    const result = await renderDomainsRemove(client as never, { serviceId: "srv", domainId: "cdm-x" });
     expect(parsedBody(result)).toEqual({ removed: true, domainId: "cdm-x" });
     expect(client.removeDomain).toHaveBeenCalledWith("srv", "cdm-x");
   });
 
   it("returns isError on rejection", async () => {
     const client = fakeClient({ removeDomain: vi.fn().mockRejectedValue(new Error("boom")) });
-    const result = await renderDomainsRemoveLogic(client as never, { serviceId: "srv", domainId: "cdm-x" });
+    const result = await renderDomainsRemove(client as never, { serviceId: "srv", domainId: "cdm-x" });
     expect((result as { isError?: boolean }).isError).toBe(true);
   });
 });
 
-describe("renderDomainsVerifyLogic", () => {
+describe("renderDomainsVerify", () => {
   it("creates a task and returns a handle", async () => {
     const client = fakeClient({ getDomain: vi.fn().mockResolvedValue(APEX) });
     const registry = new TaskRegistry();
 
-    const result = await renderDomainsVerifyLogic(client as never, registry, {
+    const result = await renderDomainsVerify(client as never, registry, {
       serviceId: "srv",
       domainId: "cdm-apex",
     });
@@ -134,7 +134,7 @@ describe("renderDomainsVerifyLogic", () => {
     const client = fakeClient({
       getDomain: vi.fn().mockRejectedValue(new RenderApiError(404, "", "not found")),
     });
-    const result = await renderDomainsVerifyLogic(client as never, new TaskRegistry(), {
+    const result = await renderDomainsVerify(client as never, new TaskRegistry(), {
       serviceId: "srv",
       domainId: "cdm-missing",
     });
@@ -142,20 +142,20 @@ describe("renderDomainsVerifyLogic", () => {
   });
 });
 
-describe("renderDomainsVerifyStatusLogic", () => {
+describe("renderDomainsVerifyStatus", () => {
   it("returns task state for a known taskId", () => {
     const registry = new TaskRegistry();
     const task = registry.createVerifyTask("srv", "cdm-x", "example.com");
     registry.update(task.taskId, { status: "running", statusMessage: "polling" });
 
-    const result = renderDomainsVerifyStatusLogic(registry, { taskId: task.taskId });
+    const result = renderDomainsVerifyStatus(registry, { taskId: task.taskId });
     const body = parsedBody(result) as { taskId: string; status: string };
     expect(body.taskId).toBe(task.taskId);
     expect(body.status).toBe("running");
   });
 
   it("returns isError for an unknown taskId", () => {
-    const result = renderDomainsVerifyStatusLogic(new TaskRegistry(), { taskId: "task-missing" });
+    const result = renderDomainsVerifyStatus(new TaskRegistry(), { taskId: "task-missing" });
     expect((result as { isError?: boolean }).isError).toBe(true);
     expect(((parsedBody(result) as { error: string }).error)).toContain("No task with id");
   });
