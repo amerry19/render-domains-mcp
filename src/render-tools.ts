@@ -44,6 +44,11 @@ export interface VerifyStatusArgs {
   taskId: string;
 }
 
+export interface SecretsSetArgs {
+  serviceId: string;
+  secrets: { key: string; value: string }[];
+}
+
 // ----------------------------------------------------------------------------
 // Handlers
 // ----------------------------------------------------------------------------
@@ -155,6 +160,36 @@ export function renderDomainsVerifyStatus(
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
   });
+}
+
+/**
+ * Set secret env vars on a Render service WITHOUT echoing values back in
+ * the response. Counter-positions Render's official MCP
+ * `update_environment_variables` tool, which returns the values it sets —
+ * leaking secrets into the agent's transcript / context.
+ *
+ * The values still pass through the agent ONCE (when the user provides
+ * them), but they don't get echoed a second time. For a fully redacted
+ * flow the user should provide values via a local `! read -s …` shell
+ * command rather than typing them into chat.
+ */
+export async function renderSecretsSet(
+  client: RenderClient,
+  args: SecretsSetArgs
+): Promise<McpTextContent> {
+  try {
+    await client.setEnvVars(args.serviceId, args.secrets);
+    return jsonContent({
+      ok: true,
+      serviceId: args.serviceId,
+      keysSet: args.secrets.map((s) => s.key),
+      note:
+        "Values intentionally not echoed in this response (this is the point of the tool). " +
+        "Render will auto-redeploy the service in ~30-60 seconds; new env vars take effect on the next live deploy.",
+    });
+  } catch (err) {
+    return errorContent(err);
+  }
 }
 
 /**

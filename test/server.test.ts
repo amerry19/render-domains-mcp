@@ -31,7 +31,7 @@ describe("createMcpServer", () => {
     McpServer.prototype.registerTool = originalRegisterTool;
   });
 
-  it("registers the 7 Render tools + 2 setup guides when GoDaddy creds are omitted", () => {
+  it("registers the 7 Render tools + render_secrets_set + 2 setup guides when GoDaddy creds are omitted", () => {
     createMcpServer({ renderApiToken: "rnd_test" });
 
     const names = captured.map((c) => c.name).sort();
@@ -44,6 +44,7 @@ describe("createMcpServer", () => {
       "render_domains_remove",
       "render_domains_verify",
       "render_domains_verify_status",
+      "render_secrets_set",
       "render_setup_guide",
     ]);
   });
@@ -58,7 +59,7 @@ describe("createMcpServer", () => {
     expect(names).toContain("godaddy_dns_list");
     expect(names).toContain("godaddy_dns_set_cname");
     expect(names).toContain("godaddy_dns_delete");
-    expect(names.length).toBe(12); // 7 render + 2 guides + 3 godaddy
+    expect(names.length).toBe(13); // 7 render-domains + render_secrets_set + 2 guides + 3 godaddy
   });
 
   it("registers godaddy_setup_guide even without creds (so agent can onboard the user)", () => {

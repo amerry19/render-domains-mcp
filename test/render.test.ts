@@ -168,4 +168,61 @@ describe("RenderClient", () => {
       }
     });
   });
+
+  describe("setEnvVars", () => {
+    it("GETs existing env vars then PUTs a merged list (preserves vars not being changed)", async () => {
+      const calls: { method: string; url: string; body: unknown }[] = [];
+      global.fetch = mockFetch((url, init) => {
+        const body = init?.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ method: init?.method ?? "GET", url: String(url), body });
+        if (init?.method === "PUT") return jsonResponse(null);
+        // GET response: existing vars
+        return jsonResponse([
+          { envVar: { key: "RENDER_API_TOKEN", value: "rnd_existing" } },
+          { envVar: { key: "PORT", value: "10000" } },
+        ]);
+      });
+
+      await new RenderClient(TOKEN).setEnvVars(SERVICE_ID, [
+        { key: "GODADDY_API_KEY", value: "gd_new" },
+        { key: "GODADDY_API_SECRET", value: "gd_secret_new" },
+      ]);
+
+      expect(calls).toHaveLength(2);
+      expect(calls[0].method).toBe("GET");
+      expect(calls[0].url).toBe(`https://api.render.com/v1/services/${SERVICE_ID}/env-vars`);
+      expect(calls[1].method).toBe("PUT");
+
+      const putBody = calls[1].body as { key: string; value: string }[];
+      const sorted = [...putBody].sort((a, b) => a.key.localeCompare(b.key));
+      expect(sorted).toEqual([
+        { key: "GODADDY_API_KEY", value: "gd_new" },
+        { key: "GODADDY_API_SECRET", value: "gd_secret_new" },
+        { key: "PORT", value: "10000" },
+        { key: "RENDER_API_TOKEN", value: "rnd_existing" },
+      ]);
+    });
+
+    it("replaces the value when a key already exists (merge, not duplicate)", async () => {
+      const calls: { method: string; body: unknown }[] = [];
+      global.fetch = mockFetch((_url, init) => {
+        const body = init?.body ? JSON.parse(String(init.body)) : null;
+        calls.push({ method: init?.method ?? "GET", body });
+        if (init?.method === "PUT") return jsonResponse(null);
+        return jsonResponse([
+          { envVar: { key: "GODADDY_API_KEY", value: "gd_OLD" } },
+          { envVar: { key: "PORT", value: "10000" } },
+        ]);
+      });
+
+      await new RenderClient(TOKEN).setEnvVars(SERVICE_ID, [
+        { key: "GODADDY_API_KEY", value: "gd_NEW" },
+      ]);
+
+      const putBody = calls[1].body as { key: string; value: string }[];
+      const godaddyEntries = putBody.filter((v) => v.key === "GODADDY_API_KEY");
+      expect(godaddyEntries).toHaveLength(1);
+      expect(godaddyEntries[0].value).toBe("gd_NEW");
+    });
+  });
 });

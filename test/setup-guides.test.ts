@@ -14,12 +14,18 @@ describe("godaddySetupGuide", () => {
     expect(text).toMatch(/production/i); // emphasize Production env, not OTE
   });
 
-  it("instructs the agent to wire creds via Render's MCP (not the dashboard)", () => {
+  it("instructs the agent to wire creds via our non-echoing render_secrets_set tool", () => {
     const text = textOf(godaddySetupGuide());
     // Agent-facing hint that closes the credential-handoff loop
-    expect(text).toContain("update_environment_variables");
+    expect(text).toContain("render_secrets_set");
     expect(text).toMatch(/GODADDY_API_KEY/);
     expect(text).toMatch(/GODADDY_API_SECRET/);
+  });
+
+  it("documents the secure shell-prompt pattern for value entry", () => {
+    const text = textOf(godaddySetupGuide());
+    // Reference the `read -s` silent-input pattern so values don't leak via chat
+    expect(text).toMatch(/read -s|secure|silent/i);
   });
 
   it("calls out the April 2026 single-domain eligibility", () => {

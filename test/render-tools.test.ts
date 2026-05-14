@@ -9,6 +9,7 @@ import {
   renderDomainsRemove,
   renderDomainsVerify,
   renderDomainsVerifyStatus,
+  renderSecretsSet,
 } from "../src/render-tools.js";
 
 interface FakeClient {
@@ -17,6 +18,7 @@ interface FakeClient {
   addDomain: ReturnType<typeof vi.fn>;
   triggerVerify: ReturnType<typeof vi.fn>;
   removeDomain: ReturnType<typeof vi.fn>;
+  setEnvVars: ReturnType<typeof vi.fn>;
 }
 
 function fakeClient(overrides: Partial<FakeClient> = {}): FakeClient {
@@ -26,6 +28,7 @@ function fakeClient(overrides: Partial<FakeClient> = {}): FakeClient {
     addDomain: vi.fn(),
     triggerVerify: vi.fn().mockResolvedValue(undefined),
     removeDomain: vi.fn().mockResolvedValue(undefined),
+    setEnvVars: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -158,5 +161,63 @@ describe("renderDomainsVerifyStatus", () => {
     const result = renderDomainsVerifyStatus(new TaskRegistry(), { taskId: "task-missing" });
     expect((result as { isError?: boolean }).isError).toBe(true);
     expect(((parsedBody(result) as { error: string }).error)).toContain("No task with id");
+  });
+});
+
+describe("renderSecretsSet", () => {
+  it("forwards key+value pairs to the client", async () => {
+    const client = fakeClient();
+    await renderSecretsSet(client as never, {
+      serviceId: "srv-abc",
+      secrets: [
+        { key: "GODADDY_API_KEY", value: "gd_sensitive_xxx" },
+        { key: "GODADDY_API_SECRET", value: "gd_sensitive_yyy" },
+      ],
+    });
+    expect(client.setEnvVars).toHaveBeenCalledWith("srv-abc", [
+      { key: "GODADDY_API_KEY", value: "gd_sensitive_xxx" },
+      { key: "GODADDY_API_SECRET", value: "gd_sensitive_yyy" },
+    ]);
+  });
+
+  it("response contains the KEY NAMES but NEVER the secret values (no echo)", async () => {
+    const client = fakeClient();
+    const result = await renderSecretsSet(client as never, {
+      serviceId: "srv-abc",
+      secrets: [
+        { key: "GODADDY_API_KEY", value: "gd_sensitive_xxx" },
+        { key: "GODADDY_API_SECRET", value: "gd_sensitive_yyy" },
+      ],
+    });
+
+    const text = result.content[0].text;
+    expect(text).toContain("GODADDY_API_KEY");
+    expect(text).toContain("GODADDY_API_SECRET");
+
+    // Critical: the secret values must NOT appear anywhere in the response
+    expect(text).not.toContain("gd_sensitive_xxx");
+    expect(text).not.toContain("gd_sensitive_yyy");
+  });
+
+  it("returns ok=true on success", async () => {
+    const client = fakeClient();
+    const result = await renderSecretsSet(client as never, {
+      serviceId: "srv-abc",
+      secrets: [{ key: "FOO", value: "bar" }],
+    });
+    const body = parsedBody(result) as { ok: boolean; keysSet: string[] };
+    expect(body.ok).toBe(true);
+    expect(body.keysSet).toEqual(["FOO"]);
+  });
+
+  it("returns isError when the client rejects", async () => {
+    const client = fakeClient({
+      setEnvVars: vi.fn().mockRejectedValue(new Error("network down")),
+    });
+    const result = await renderSecretsSet(client as never, {
+      serviceId: "srv-abc",
+      secrets: [{ key: "FOO", value: "bar" }],
+    });
+    expect((result as { isError?: boolean }).isError).toBe(true);
   });
 });

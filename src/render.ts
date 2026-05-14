@@ -98,4 +98,27 @@ export class RenderClient {
   async removeDomain(serviceId: string, domainId: string): Promise<void> {
     await this.request("DELETE", `/services/${serviceId}/custom-domains/${domainId}`);
   }
+
+  /**
+   * Set (upsert) environment variables on a service. Reads existing vars,
+   * merges in the new ones (replacing values for matching keys), and writes
+   * the full list back.
+   *
+   * Render's `PUT /env-vars` is a full replace, so we fetch-merge-write to
+   * preserve unrelated vars. The returned list values are NOT propagated
+   * back to callers of `setEnvVars` — callers should use this for secret
+   * values they don't want echoed.
+   */
+  async setEnvVars(serviceId: string, updates: { key: string; value: string }[]): Promise<void> {
+    const getRes = await this.request("GET", `/services/${serviceId}/env-vars`);
+    const current = (await getRes.json()) as { envVar: { key: string; value: string } }[];
+
+    const updateKeys = new Set(updates.map((u) => u.key));
+    const merged = [
+      ...current.filter((c) => !updateKeys.has(c.envVar.key)).map((c) => c.envVar),
+      ...updates,
+    ];
+
+    await this.request("PUT", `/services/${serviceId}/env-vars`, merged);
+  }
 }

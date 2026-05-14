@@ -20,6 +20,7 @@ import {
   renderDomainsRemove,
   renderDomainsVerify,
   renderDomainsVerifyStatus,
+  renderSecretsSet,
   renderSetupGuide,
 } from "./render-tools.js";
 import { renderDomainsDnsCheck } from "./dns.js";
@@ -198,6 +199,35 @@ function registerRenderTools(server: McpServer, render: RenderClient, tasks: Tas
       },
     },
     ({ taskId }) => renderDomainsVerifyStatus(tasks, { taskId })
+  );
+
+  server.registerTool(
+    "render_secrets_set",
+    {
+      title: "Set service env vars (secrets) without value echo",
+      description:
+        "Set or update environment variables on a Render service WITHOUT echoing the values back in the response. " +
+        "Use this — not the official Render MCP's update_environment_variables — when wiring sensitive values (API keys, tokens, secrets) into a service. " +
+        "Existing env vars are preserved (merge semantics). The response contains only key names, never values. " +
+        "Render will auto-redeploy the service ~30-60s after this call.",
+      inputSchema: {
+        serviceId: z.string().describe("Render service ID, e.g. srv-..."),
+        secrets: z
+          .array(
+            z.object({
+              key: z.string().describe("Env var name, e.g. GODADDY_API_KEY"),
+              value: z
+                .string()
+                .describe(
+                  "Sensitive — will be sent to Render's API but NOT echoed back in this tool's response."
+                ),
+            })
+          )
+          .min(1)
+          .describe("One or more secret key/value pairs to upsert"),
+      },
+    },
+    ({ serviceId, secrets }) => renderSecretsSet(render, { serviceId, secrets })
   );
 
   server.registerTool(
