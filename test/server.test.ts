@@ -32,13 +32,14 @@ describe("createMcpServer", () => {
     McpServer.prototype.registerTool = originalRegisterTool;
   });
 
-  it("registers the 7 Render tools + render_secrets_set + 2 setup guides when GoDaddy creds are omitted", () => {
+  it("registers the Render core tools + render_secrets_set + 2 setup guides when GoDaddy creds are omitted", () => {
     createMcpServer({ renderApiToken: "rnd_test" });
 
     const names = captured.map((c) => c.name).sort();
     expect(names).toEqual([
       "godaddy_setup_guide",
       "render_domains_add",
+      "render_domains_check",
       "render_domains_dns_check",
       "render_domains_get",
       "render_domains_list",
@@ -60,7 +61,7 @@ describe("createMcpServer", () => {
     expect(names).toContain("godaddy_dns_list");
     expect(names).toContain("godaddy_dns_set_cname");
     expect(names).toContain("godaddy_dns_delete");
-    expect(names.length).toBe(13); // 7 render-domains + render_secrets_set + 2 guides + 3 godaddy
+    expect(names.length).toBe(14); // 8 render-domains + render_secrets_set + 2 guides + 3 godaddy
   });
 
   it("adds render_pass_request when passTokenStore is provided (HTTP mode)", () => {

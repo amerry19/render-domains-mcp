@@ -38,7 +38,9 @@ describe("godaddyDnsList", () => {
     const result = await godaddyDnsList(client as never, { domain: "example.com" });
 
     expect(client.listRecords).toHaveBeenCalledWith("example.com", { type: undefined, name: undefined });
-    expect(parsedBody(result)).toEqual({ count: 2, records: RECORDS });
+    const body = parsedBody(result) as { count: number; records: DnsRecord[] };
+    expect(body.count).toBe(2);
+    expect(body.records).toEqual(RECORDS);
   });
 
   it("forwards type + name filters to the client", async () => {

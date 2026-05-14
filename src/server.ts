@@ -15,6 +15,7 @@ import { TaskRegistry } from "./tasks.js";
 import { GoDaddyClient } from "./godaddy.js";
 import {
   renderDomainsAdd,
+  renderDomainsCheck,
   renderDomainsGet,
   renderDomainsList,
   renderDomainsRemove,
@@ -209,25 +210,47 @@ function registerRenderTools(server: McpServer, render: RenderClient, tasks: Tas
   server.registerTool(
     "render_domains_verify",
     {
-      title: "Verify custom domain (async)",
+      title: "Verify custom domain (trigger Render's check)",
       description:
-        "Trigger Render's verification check and return a task handle. " +
-        "Render verifies asynchronously (POST /verify returns 202), so this tool spawns a background poll that updates a task registry. " +
-        "Caller should poll render_domains_verify_status({ taskId }) until status is terminal: completed | failed | timed_out.",
+        "Trigger Render's verification check for a custom domain. Default: fire-and-forget — returns immediately with guidance about the ~5min cert issuance wait. " +
+        "Use render_domains_check afterward to confirm when the URL actually serves with a valid TLS cert. " +
+        "Set pollUntilReady=true ONLY for non-interactive automation that genuinely needs to block — it spawns a background task and ties up agent state for up to 5 minutes.",
       inputSchema: {
         serviceId: z.string().describe("Render service ID"),
         domainId: z.string().describe("Custom domain ID to verify"),
+        pollUntilReady: z
+          .boolean()
+          .optional()
+          .describe(
+            "Default false. When true, spawns a background two-phase polling task (verifies DNS, then waits for TLS cert) and returns a task handle for render_domains_verify_status."
+          ),
         timeoutSeconds: z
           .number()
           .int()
           .min(10)
           .max(1800)
           .optional()
-          .describe("Max seconds to wait for verification. Default 300 (5 min)."),
+          .describe("Max seconds to wait for verification when pollUntilReady=true. Default 300 (5 min)."),
       },
     },
-    ({ serviceId, domainId, timeoutSeconds }) =>
-      renderDomainsVerify(render, tasks, { serviceId, domainId, timeoutSeconds })
+    ({ serviceId, domainId, pollUntilReady, timeoutSeconds }) =>
+      renderDomainsVerify(render, tasks, { serviceId, domainId, pollUntilReady, timeoutSeconds })
+  );
+
+  server.registerTool(
+    "render_domains_check",
+    {
+      title: "Check if a custom domain is fully live (one-shot, no polling)",
+      description:
+        "One-shot readiness probe. Returns the current verificationStatus from Render AND attempts an HTTPS handshake against the domain. " +
+        "ready_to_serve=true means: Render verified AND TLS cert issued — the URL actually works. " +
+        "Use this when the user asks 'is my domain ready yet?' — no background tasks, no agent-loop blocking.",
+      inputSchema: {
+        serviceId: z.string().describe("Render service ID"),
+        domainId: z.string().describe("Custom domain ID"),
+      },
+    },
+    ({ serviceId, domainId }) => renderDomainsCheck(render, { serviceId, domainId })
   );
 
   server.registerTool(

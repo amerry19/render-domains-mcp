@@ -26,6 +26,32 @@ describe("renderDomainsDnsCheck", () => {
     expect(body.pointsAtRender).toBe(true);
   });
 
+  it("reports pointsAtRender=true when DoH A query returns the CNAME chain with onrender.com intermediates", async () => {
+    // This is what we actually see in production: DoH for an A query returns
+    // the FULL chain in the answer, including CNAME-to-onrender.com hops and
+    // the final web-service IPs (which are NOT 216.24.57.1 — that's static).
+    const resolver = makeResolver({
+      A: [
+        "adammerry-site.onrender.com.",
+        "gcp-us-west1-1.origin.onrender.com.",
+        "gcp-us-west1-1.origin.onrender.com.cdn.cloudflare.net.",
+        "216.24.57.7",
+        "216.24.57.251",
+      ],
+      CNAME: [],
+    });
+    const result = await renderDomainsDnsCheck({ domain: "demo-mcp.example.com" }, resolver);
+    const body = parsedBody(result) as { pointsAtRender: boolean };
+    expect(body.pointsAtRender).toBe(true);
+  });
+
+  it("reports pointsAtRender=true for any Render-range IP (216.24.57.0/24), not just the static-site apex IP", async () => {
+    const resolver = makeResolver({ A: ["216.24.57.42"], CNAME: [] });
+    const result = await renderDomainsDnsCheck({ domain: "example.com" }, resolver);
+    const body = parsedBody(result) as { pointsAtRender: boolean };
+    expect(body.pointsAtRender).toBe(true);
+  });
+
   it("reports pointsAtRender=false when DNS goes elsewhere", async () => {
     const resolver = makeResolver({ A: ["1.2.3.4"], CNAME: [] });
     const result = await renderDomainsDnsCheck({ domain: "example.com" }, resolver);

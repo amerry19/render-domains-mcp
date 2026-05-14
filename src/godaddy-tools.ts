@@ -34,7 +34,14 @@ export async function godaddyDnsList(
 ): Promise<McpTextContent> {
   try {
     const records = await client.listRecords(args.domain, { type: args.type, name: args.name });
-    return jsonContent({ count: records.length, records });
+    const filter = args.type
+      ? ` (filtered: type=${args.type}${args.name ? `, name=${args.name}` : ""})`
+      : "";
+    return jsonContent({
+      summary: `📋 Found ${records.length} DNS record${records.length === 1 ? "" : "s"} for ${args.domain} at GoDaddy${filter}.`,
+      count: records.length,
+      records,
+    });
   } catch (err) {
     return errorContent(err);
   }
@@ -53,6 +60,7 @@ export async function godaddyDnsSetCname(
       ttl: args.ttl ?? 3600,
     };
     return jsonContent({
+      summary: `✅ Set CNAME ${args.name}.${args.domain} → ${args.target} (TTL ${record.ttl}s) at GoDaddy.`,
       ok: true,
       record,
       note: `CNAME set. Allow a few minutes for DNS propagation before calling render_domains_verify.`,
@@ -68,7 +76,11 @@ export async function godaddyDnsDelete(
 ): Promise<McpTextContent> {
   try {
     await client.deleteRecords(args.domain, args.type, args.name);
-    return jsonContent({ ok: true, deleted: { domain: args.domain, type: args.type, name: args.name } });
+    return jsonContent({
+      summary: `🗑️ Deleted ${args.type} record(s) named '${args.name}' on ${args.domain} at GoDaddy.`,
+      ok: true,
+      deleted: { domain: args.domain, type: args.type, name: args.name },
+    });
   } catch (err) {
     return errorContent(err);
   }

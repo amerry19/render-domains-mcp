@@ -113,14 +113,26 @@ export class TaskRegistry {
  * Background polling loop. Fire-and-forget — updates the registry as state
  * changes, so the agent's status polls always reflect the latest known state.
  *
- * Render's verification is async on their side (POST /verify returns 202).
- * We poll GET /custom-domains/{id} and watch verificationStatus.
+ * Two-phase pattern:
+ *   Phase 1 — poll Render's verificationStatus (the DNS/ownership check)
+ *   Phase 2 — poll the actual HTTPS handshake (proxies cert issuance, which
+ *             Render's REST API does NOT surface)
+ *
+ * The task only flips to `completed` when both phases succeed: the URL
+ * actually serves traffic with a valid TLS cert. This avoids the UX trap
+ * where Render says "verified" but the browser shows ERR_SSL because the
+ * cert hasn't issued yet (usually 1-5 min lag).
+ *
+ * `httpsCheck` is optional — pass `undefined` to skip phase 2 (e.g. when
+ * the caller only cares about Render-side verification, not user-facing
+ * URL readiness).
  */
 export async function runVerifyTask(
   registry: TaskRegistry,
   task: VerifyTask,
   triggerVerify: () => Promise<void>,
   fetchDomain: () => Promise<CustomDomain>,
+  httpsCheck: ((domain: string) => Promise<boolean>) | undefined,
   options: TaskOptions = {}
 ): Promise<void> {
   const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000;
@@ -145,8 +157,12 @@ export async function runVerifyTask(
   }
 
   let interval = initialIntervalMs;
+  let verifiedDomain: CustomDomain | undefined;
 
-  while (Date.now() < deadline) {
+  // --------------------------------------------------------------------------
+  // Phase 1: wait for Render's verificationStatus → "verified"
+  // --------------------------------------------------------------------------
+  while (Date.now() < deadline && !verifiedDomain) {
     await sleep(interval);
 
     let domain: CustomDomain;
@@ -166,16 +182,12 @@ export async function runVerifyTask(
 
     registry.update(task.taskId, {
       pollAttempts: currentTask.pollAttempts + 1,
-      statusMessage: `Render reports verificationStatus=${domain.verificationStatus}`,
+      statusMessage: `Phase 1 — Render reports verificationStatus=${domain.verificationStatus}`,
     });
 
     if (domain.verificationStatus === "verified") {
-      registry.update(task.taskId, {
-        status: "completed",
-        statusMessage: "Domain verified by Render",
-        result: domain,
-      });
-      return;
+      verifiedDomain = domain;
+      break;
     }
 
     if (
@@ -194,10 +206,73 @@ export async function runVerifyTask(
     interval = Math.min(interval * 2, maxIntervalMs);
   }
 
+  if (!verifiedDomain) {
+    registry.update(task.taskId, {
+      status: "timed_out",
+      statusMessage: `Phase 1 timed out — Render did not verify within ${Math.round(timeoutMs / 1000)}s`,
+      error: "timeout (phase 1: verification)",
+    });
+    return;
+  }
+
+  // --------------------------------------------------------------------------
+  // Phase 2: wait for the HTTPS handshake to succeed (proxy for cert issued).
+  // Skipped if no httpsCheck function provided.
+  // --------------------------------------------------------------------------
+  if (!httpsCheck) {
+    registry.update(task.taskId, {
+      status: "completed",
+      statusMessage: "Domain verified by Render (TLS check skipped)",
+      result: verifiedDomain,
+    });
+    return;
+  }
+
+  registry.update(task.taskId, {
+    statusMessage: "Phase 2 — Render verified the domain. Waiting for HTTPS cert to issue…",
+  });
+
+  // Reset interval for phase 2 (cert issuance is usually 1-5 min, so faster
+  // poll cadence is fine).
+  interval = initialIntervalMs;
+
+  while (Date.now() < deadline) {
+    await sleep(interval);
+
+    let tlsReady = false;
+    try {
+      tlsReady = await httpsCheck(verifiedDomain.name);
+    } catch {
+      tlsReady = false;
+    }
+
+    const currentTask = registry.get(task.taskId);
+    if (!currentTask) return; // evicted
+
+    registry.update(task.taskId, {
+      pollAttempts: currentTask.pollAttempts + 1,
+      statusMessage: tlsReady
+        ? "Phase 2 — HTTPS handshake succeeded"
+        : "Phase 2 — Waiting for HTTPS cert (still failing handshake)",
+    });
+
+    if (tlsReady) {
+      registry.update(task.taskId, {
+        status: "completed",
+        statusMessage: "Domain verified AND HTTPS cert issued — URL is live",
+        result: verifiedDomain,
+      });
+      return;
+    }
+
+    interval = Math.min(interval * 2, maxIntervalMs);
+  }
+
   registry.update(task.taskId, {
     status: "timed_out",
-    statusMessage: `Verification did not complete within ${Math.round(timeoutMs / 1000)}s`,
-    error: "timeout",
+    statusMessage: `Phase 2 timed out — Render verified but HTTPS cert did not issue within ${Math.round(timeoutMs / 1000)}s`,
+    error: "timeout (phase 2: cert issuance)",
+    result: verifiedDomain,
   });
 }
 

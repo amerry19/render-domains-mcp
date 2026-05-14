@@ -85,7 +85,7 @@ describe("runVerifyTask", () => {
     const trigger = vi.fn().mockResolvedValue(undefined);
     const fetcher = vi.fn().mockResolvedValue(makeDomain({ verificationStatus: "unverified" }));
 
-    const promise = runVerifyTask(registry, task, trigger, fetcher, { timeoutMs: 100, initialIntervalMs: 1000 });
+    const promise = runVerifyTask(registry, task, trigger, fetcher, undefined, { timeoutMs: 100, initialIntervalMs: 1000 });
 
     // Yield to allow trigger() promise to resolve before assertions
     await vi.advanceTimersByTimeAsync(0);
@@ -105,7 +105,7 @@ describe("runVerifyTask", () => {
     const trigger = vi.fn().mockResolvedValue(undefined);
     const fetcher = vi.fn().mockResolvedValue(verifiedDomain);
 
-    const promise = runVerifyTask(registry, task, trigger, fetcher, {
+    const promise = runVerifyTask(registry, task, trigger, fetcher, undefined, {
       timeoutMs: 10_000,
       initialIntervalMs: 1000,
     });
@@ -125,7 +125,7 @@ describe("runVerifyTask", () => {
     const trigger = vi.fn().mockResolvedValue(undefined);
     const fetcher = vi.fn().mockResolvedValue(makeDomain({ verificationStatus: "verification_failed" }));
 
-    const promise = runVerifyTask(registry, task, trigger, fetcher, {
+    const promise = runVerifyTask(registry, task, trigger, fetcher, undefined, {
       timeoutMs: 10_000,
       initialIntervalMs: 1000,
     });
@@ -145,7 +145,7 @@ describe("runVerifyTask", () => {
     const trigger = vi.fn().mockResolvedValue(undefined);
     const fetcher = vi.fn().mockResolvedValue(makeDomain({ verificationStatus: "unverified" }));
 
-    const promise = runVerifyTask(registry, task, trigger, fetcher, {
+    const promise = runVerifyTask(registry, task, trigger, fetcher, undefined, {
       timeoutMs: 5_000,
       initialIntervalMs: 1000,
       maxIntervalMs: 2000,
@@ -156,7 +156,7 @@ describe("runVerifyTask", () => {
 
     const final = registry.get(task.taskId);
     expect(final?.status).toBe("timed_out");
-    expect(final?.error).toBe("timeout");
+    expect(final?.error).toMatch(/timeout/);
   });
 
   it("transitions to failed when triggerVerify itself throws", async () => {
@@ -166,12 +166,83 @@ describe("runVerifyTask", () => {
     const trigger = vi.fn().mockRejectedValue(new Error("Render API 500"));
     const fetcher = vi.fn();
 
-    await runVerifyTask(registry, task, trigger, fetcher, { timeoutMs: 1000, initialIntervalMs: 100 });
+    await runVerifyTask(registry, task, trigger, fetcher, undefined, { timeoutMs: 1000, initialIntervalMs: 100 });
 
     const final = registry.get(task.taskId);
     expect(final?.status).toBe("failed");
     expect(final?.error).toContain("Render API 500");
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("with httpsCheck: stays running after verification until HTTPS handshake works", async () => {
+    const registry = new TaskRegistry();
+    const task = registry.createVerifyTask("srv", "cdm", "ex.com");
+    const verifiedDomain = makeDomain({ verificationStatus: "verified" });
+
+    const trigger = vi.fn().mockResolvedValue(undefined);
+    const fetcher = vi.fn().mockResolvedValue(verifiedDomain);
+
+    // TLS not ready for 2 attempts, then ready
+    const httpsCheck = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+
+    const promise = runVerifyTask(registry, task, trigger, fetcher, httpsCheck, {
+      timeoutMs: 60_000,
+      initialIntervalMs: 1000,
+      maxIntervalMs: 2000,
+    });
+
+    await vi.runAllTimersAsync();
+    await promise;
+
+    const final = registry.get(task.taskId);
+    expect(final?.status).toBe("completed");
+    expect(final?.statusMessage).toMatch(/HTTPS cert issued/i);
+    expect(httpsCheck).toHaveBeenCalledTimes(3);
+  });
+
+  it("with httpsCheck: times out in phase 2 if cert never issues", async () => {
+    const registry = new TaskRegistry();
+    const task = registry.createVerifyTask("srv", "cdm", "ex.com");
+
+    const trigger = vi.fn().mockResolvedValue(undefined);
+    const fetcher = vi.fn().mockResolvedValue(makeDomain({ verificationStatus: "verified" }));
+    const httpsCheck = vi.fn().mockResolvedValue(false); // never ready
+
+    const promise = runVerifyTask(registry, task, trigger, fetcher, httpsCheck, {
+      timeoutMs: 5_000,
+      initialIntervalMs: 1000,
+      maxIntervalMs: 2000,
+    });
+
+    await vi.runAllTimersAsync();
+    await promise;
+
+    const final = registry.get(task.taskId);
+    expect(final?.status).toBe("timed_out");
+    expect(final?.error).toMatch(/phase 2|cert issuance/i);
+  });
+
+  it("without httpsCheck: completes immediately on Render verification (backward compat)", async () => {
+    const registry = new TaskRegistry();
+    const task = registry.createVerifyTask("srv", "cdm", "ex.com");
+    const verifiedDomain = makeDomain({ verificationStatus: "verified" });
+
+    const trigger = vi.fn().mockResolvedValue(undefined);
+    const fetcher = vi.fn().mockResolvedValue(verifiedDomain);
+
+    const promise = runVerifyTask(registry, task, trigger, fetcher, undefined, {
+      timeoutMs: 10_000,
+      initialIntervalMs: 1000,
+    });
+
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(registry.get(task.taskId)?.status).toBe("completed");
   });
 
   it("retries when fetchDomain throws transiently", async () => {
@@ -185,7 +256,7 @@ describe("runVerifyTask", () => {
       .mockRejectedValueOnce(new Error("network blip"))
       .mockResolvedValueOnce(verifiedDomain);
 
-    const promise = runVerifyTask(registry, task, trigger, fetcher, {
+    const promise = runVerifyTask(registry, task, trigger, fetcher, undefined, {
       timeoutMs: 30_000,
       initialIntervalMs: 1000,
       maxIntervalMs: 2000,

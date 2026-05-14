@@ -53,7 +53,9 @@ describe("renderDomainsList", () => {
   it("returns count + domains", async () => {
     const client = fakeClient({ listDomains: vi.fn().mockResolvedValue([APEX, SUBDOMAIN]) });
     const result = await renderDomainsList(client as never, { serviceId: "srv-1" });
-    expect(parsedBody(result)).toEqual({ count: 2, domains: [APEX, SUBDOMAIN] });
+    const body = parsedBody(result) as { count: number; domains: CustomDomain[] };
+    expect(body.count).toBe(2);
+    expect(body.domains).toEqual([APEX, SUBDOMAIN]);
   });
 
   it("returns isError on RenderApiError", async () => {
@@ -67,10 +69,14 @@ describe("renderDomainsList", () => {
 });
 
 describe("renderDomainsGet", () => {
-  it("returns the domain object", async () => {
+  it("returns the domain object fields", async () => {
     const client = fakeClient({ getDomain: vi.fn().mockResolvedValue(APEX) });
     const result = await renderDomainsGet(client as never, { serviceId: "srv", domainId: "cdm-apex" });
-    expect(parsedBody(result)).toEqual(APEX);
+    const body = parsedBody(result) as CustomDomain & { summary: string };
+    expect(body.id).toBe(APEX.id);
+    expect(body.name).toBe(APEX.name);
+    expect(body.verificationStatus).toBe(APEX.verificationStatus);
+    expect(body.summary).toContain(APEX.name);
   });
 
   it("returns isError on failure", async () => {
@@ -105,7 +111,9 @@ describe("renderDomainsRemove", () => {
   it("acks removal with the domainId", async () => {
     const client = fakeClient();
     const result = await renderDomainsRemove(client as never, { serviceId: "srv", domainId: "cdm-x" });
-    expect(parsedBody(result)).toEqual({ removed: true, domainId: "cdm-x" });
+    const body = parsedBody(result) as { removed: boolean; domainId: string };
+    expect(body.removed).toBe(true);
+    expect(body.domainId).toBe("cdm-x");
     expect(client.removeDomain).toHaveBeenCalledWith("srv", "cdm-x");
   });
 
@@ -117,7 +125,7 @@ describe("renderDomainsRemove", () => {
 });
 
 describe("renderDomainsVerify", () => {
-  it("creates a task and returns a handle", async () => {
+  it("default (fire-and-forget): triggers verify and returns guidance without spawning a task", async () => {
     const client = fakeClient({ getDomain: vi.fn().mockResolvedValue(APEX) });
     const registry = new TaskRegistry();
 
@@ -126,10 +134,32 @@ describe("renderDomainsVerify", () => {
       domainId: "cdm-apex",
     });
 
-    const body = parsedBody(result) as { taskId: string; domain: { name: string }; note: string };
+    const body = parsedBody(result) as {
+      triggered: boolean;
+      taskId?: string;
+      summary: string;
+      nextStep: string;
+    };
+    expect(body.triggered).toBe(true);
+    expect(body.taskId).toBeUndefined(); // no task in fire-and-forget mode
+    expect(body.summary).toMatch(/render_domains_check|TLS cert|cert/i);
+    expect(body.nextStep).toContain("render_domains_check");
+    expect(client.triggerVerify).toHaveBeenCalledWith("srv", "cdm-apex");
+  });
+
+  it("pollUntilReady=true: spawns a task and returns a handle", async () => {
+    const client = fakeClient({ getDomain: vi.fn().mockResolvedValue(APEX) });
+    const registry = new TaskRegistry();
+
+    const result = await renderDomainsVerify(client as never, registry, {
+      serviceId: "srv",
+      domainId: "cdm-apex",
+      pollUntilReady: true,
+    });
+
+    const body = parsedBody(result) as { taskId: string; domain: { name: string } };
     expect(body.taskId).toMatch(/^task-/);
     expect(body.domain.name).toBe("example.com");
-    expect(body.note).toContain("Background verification started");
     expect(registry.get(body.taskId)).toBeDefined();
   });
 
@@ -142,6 +172,52 @@ describe("renderDomainsVerify", () => {
       domainId: "cdm-missing",
     });
     expect((result as { isError?: boolean }).isError).toBe(true);
+  });
+});
+
+describe("renderDomainsCheck", () => {
+  it("returns ready_to_serve=true when verified AND TLS handshake succeeds", async () => {
+    const client = fakeClient({ getDomain: vi.fn().mockResolvedValue(APEX) });
+    const httpsCheck = vi.fn().mockResolvedValue(true);
+
+    const { renderDomainsCheck } = await import("../src/render-tools.js");
+    const result = await renderDomainsCheck(client as never, { serviceId: "srv", domainId: "cdm-x" }, httpsCheck);
+
+    const body = parsedBody(result) as {
+      readyToServe: boolean;
+      verificationStatus: string;
+      tlsHandshake: string;
+      summary: string;
+    };
+    expect(body.readyToServe).toBe(true);
+    expect(body.verificationStatus).toBe("verified");
+    expect(body.tlsHandshake).toBe("ok");
+    expect(body.summary).toMatch(/is live|live/i);
+  });
+
+  it("returns ready_to_serve=false when verified but TLS cert still issuing", async () => {
+    const client = fakeClient({ getDomain: vi.fn().mockResolvedValue(APEX) });
+    const httpsCheck = vi.fn().mockResolvedValue(false);
+
+    const { renderDomainsCheck } = await import("../src/render-tools.js");
+    const result = await renderDomainsCheck(client as never, { serviceId: "srv", domainId: "cdm-x" }, httpsCheck);
+
+    const body = parsedBody(result) as { readyToServe: boolean; summary: string };
+    expect(body.readyToServe).toBe(false);
+    expect(body.summary).toMatch(/cert.*issuing|try again/i);
+  });
+
+  it("returns ready_to_serve=false (and skips TLS probe) when domain not yet verified", async () => {
+    const unverified = { ...APEX, verificationStatus: "unverified" };
+    const client = fakeClient({ getDomain: vi.fn().mockResolvedValue(unverified) });
+    const httpsCheck = vi.fn();
+
+    const { renderDomainsCheck } = await import("../src/render-tools.js");
+    const result = await renderDomainsCheck(client as never, { serviceId: "srv", domainId: "cdm-x" }, httpsCheck);
+
+    const body = parsedBody(result) as { readyToServe: boolean };
+    expect(body.readyToServe).toBe(false);
+    expect(httpsCheck).not.toHaveBeenCalled(); // saves a network call
   });
 });
 
