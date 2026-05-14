@@ -15,6 +15,15 @@ import { TaskRegistry, runVerifyTask } from "./tasks.js";
 export interface ServerOptions {
   /** Render API token used by the server to call api.render.com on behalf of the user. */
   renderApiToken: string;
+  /**
+   * Optional shared TaskRegistry. Required when running in stateless HTTP mode,
+   * where multiple request handlers need to see each other's task state.
+   * If omitted, a per-server registry is created (fine for stdio mode).
+   *
+   * Production note: swap this for a Render KV-backed implementation so task
+   * state survives instance restarts and scales horizontally.
+   */
+  taskRegistry?: TaskRegistry;
 }
 
 function jsonContent(payload: unknown) {
@@ -48,7 +57,7 @@ async function resolveDoh(name: string, type: "A" | "CNAME"): Promise<string[]> 
 
 export function createMcpServer(opts: ServerOptions): McpServer {
   const render = new RenderClient(opts.renderApiToken);
-  const tasks = new TaskRegistry();
+  const tasks = opts.taskRegistry ?? new TaskRegistry();
 
   const server = new McpServer({
     name: "render-domains-mcp",

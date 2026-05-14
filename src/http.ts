@@ -23,6 +23,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { Request, Response, NextFunction } from "express";
 
 import { createMcpServer } from "./server.js";
+import { TaskRegistry } from "./tasks.js";
 
 // ----------------------------------------------------------------------------
 // Config from env
@@ -88,12 +89,21 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 // MCP server + transport
 // ----------------------------------------------------------------------------
 
-// Stateless mode (matches Render's own Python template `stateless_http=True`).
+// Module-scoped TaskRegistry: survives across requests (needed for the verify
+// task pattern where verify_status must find the task created by verify).
+// In a multi-instance deploy this would need to move to Render KV or Postgres.
+const sharedTaskRegistry = new TaskRegistry();
+
+// Stateless transport (matches Render's own Python template `stateless_http=True`).
 // Each request gets a fresh transport + fresh server instance — no cross-request
-// state, no "Server already initialized" errors when multiple clients connect.
+// PROTOCOL state, no "Server already initialized" errors when multiple clients
+// connect. App-level state (tasks) lives in the shared module-scope registry.
 async function handleMcpRequest(req: Request, res: Response, body?: unknown) {
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  const server = createMcpServer({ renderApiToken: renderApiToken! });
+  const server = createMcpServer({
+    renderApiToken: renderApiToken!,
+    taskRegistry: sharedTaskRegistry,
+  });
   res.on("close", () => {
     void transport.close();
     void server.close();
