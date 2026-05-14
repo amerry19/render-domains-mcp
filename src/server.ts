@@ -1,20 +1,45 @@
 /**
  * MCP server factory — shared by stdio and HTTP transport entry points.
  *
- * Why a factory: `src/index.ts` uses StdioServerTransport (local Claude Code use),
- * `src/http.ts` uses StreamableHTTPServerTransport (Render-hosted use). Both share
- * the same tool registrations + state (RenderClient, TaskRegistry).
+ * The factory wires zod schemas + tool registrations to the pure handler
+ * functions in *-tools.ts modules. Provider adapters (Render, GoDaddy)
+ * register their own tool sets — GoDaddy is optional and registered only
+ * when credentials are passed.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { RenderApiError, RenderClient } from "./render.js";
-import { TaskRegistry, runVerifyTask } from "./tasks.js";
+import { RenderClient } from "./render.js";
+import { TaskRegistry } from "./tasks.js";
+import { GoDaddyClient } from "./godaddy.js";
+import {
+  renderDomainsAddLogic,
+  renderDomainsGetLogic,
+  renderDomainsListLogic,
+  renderDomainsRemoveLogic,
+  renderDomainsVerifyLogic,
+  renderDomainsVerifyStatusLogic,
+} from "./render-tools.js";
+import { renderDomainsDnsCheckLogic } from "./dns.js";
+import {
+  godaddyDnsDeleteLogic,
+  godaddyDnsListLogic,
+  godaddyDnsSetCnameLogic,
+} from "./godaddy-tools.js";
 
 export interface ServerOptions {
   /** Render API token used by the server to call api.render.com on behalf of the user. */
   renderApiToken: string;
+  /**
+   * Optional GoDaddy credentials. When provided, the server also registers
+   * registrar-side tools (DNS record CRUD) so the agent can close the full
+   * "add custom domain → set DNS → verify" loop in one flow.
+   */
+  goDaddy?: {
+    key: string;
+    secret: string;
+  };
   /**
    * Optional shared TaskRegistry. Required when running in stateless HTTP mode,
    * where multiple request handlers need to see each other's task state.
@@ -26,35 +51,6 @@ export interface ServerOptions {
   taskRegistry?: TaskRegistry;
 }
 
-function jsonContent(payload: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }] };
-}
-
-function errorContent(err: unknown) {
-  const message = err instanceof Error ? err.message : String(err);
-  const renderStatus = err instanceof RenderApiError ? err.status : undefined;
-  const body = err instanceof RenderApiError ? err.body : undefined;
-  return {
-    content: [
-      {
-        type: "text" as const,
-        text: JSON.stringify({ error: message, renderStatus, renderBody: body }, null, 2),
-      },
-    ],
-    isError: true,
-  };
-}
-
-async function resolveDoh(name: string, type: "A" | "CNAME"): Promise<string[]> {
-  const res = await fetch(
-    `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=${type}`,
-    { headers: { Accept: "application/dns-json" } }
-  );
-  if (!res.ok) throw new Error(`DoH lookup failed: ${res.status} ${res.statusText}`);
-  const json = (await res.json()) as { Answer?: { name: string; type: number; TTL: number; data: string }[] };
-  return (json.Answer ?? []).map((a) => a.data);
-}
-
 export function createMcpServer(opts: ServerOptions): McpServer {
   const render = new RenderClient(opts.renderApiToken);
   const tasks = opts.taskRegistry ?? new TaskRegistry();
@@ -64,25 +60,31 @@ export function createMcpServer(opts: ServerOptions): McpServer {
     version: "0.1.0",
   });
 
-  // --------------------------------------------------------------------------
-  // Synchronous domain CRUD tools
-  // --------------------------------------------------------------------------
+  registerRenderTools(server, render, tasks);
 
+  if (opts.goDaddy) {
+    const godaddy = new GoDaddyClient(opts.goDaddy.key, opts.goDaddy.secret);
+    registerGoDaddyTools(server, godaddy);
+  }
+
+  return server;
+}
+
+// ----------------------------------------------------------------------------
+// Render adapter — 7 tools
+// ----------------------------------------------------------------------------
+
+function registerRenderTools(server: McpServer, render: RenderClient, tasks: TaskRegistry): void {
   server.registerTool(
     "render_domains_list",
     {
       title: "List custom domains",
       description: "List all custom domains attached to a Render service.",
-      inputSchema: { serviceId: z.string().describe("Render service ID, e.g. srv-d81l8apo3t8c739e1nlg") },
+      inputSchema: {
+        serviceId: z.string().describe("Render service ID, e.g. srv-d81l8apo3t8c739e1nlg"),
+      },
     },
-    async ({ serviceId }) => {
-      try {
-        const domains = await render.listDomains(serviceId);
-        return jsonContent({ count: domains.length, domains });
-      } catch (err) {
-        return errorContent(err);
-      }
-    }
+    ({ serviceId }) => renderDomainsListLogic(render, { serviceId })
   );
 
   server.registerTool(
@@ -95,14 +97,7 @@ export function createMcpServer(opts: ServerOptions): McpServer {
         domainId: z.string().describe("Custom domain ID, e.g. cdm-..."),
       },
     },
-    async ({ serviceId, domainId }) => {
-      try {
-        const domain = await render.getDomain(serviceId, domainId);
-        return jsonContent(domain);
-      } catch (err) {
-        return errorContent(err);
-      }
-    }
+    ({ serviceId, domainId }) => renderDomainsGetLogic(render, { serviceId, domainId })
   );
 
   server.registerTool(
@@ -116,22 +111,7 @@ export function createMcpServer(opts: ServerOptions): McpServer {
         name: z.string().describe("Fully-qualified domain to attach, e.g. example.com or www.example.com"),
       },
     },
-    async ({ serviceId, name }) => {
-      try {
-        const domain = await render.addDomain(serviceId, name);
-        return jsonContent({
-          domain,
-          nextSteps: [
-            domain.domainType === "apex"
-              ? "Add an A record at @ pointing to 216.24.57.1 (Render's static site IP) or an ALIAS/ANAME to the Render-provided target"
-              : `Add a CNAME at ${name.split(".")[0]} pointing to <your-service>.onrender.com`,
-            `Then call render_domains_verify({ serviceId: "${serviceId}", domainId: "${domain.id}" })`,
-          ],
-        });
-      } catch (err) {
-        return errorContent(err);
-      }
-    }
+    ({ serviceId, name }) => renderDomainsAddLogic(render, { serviceId, name })
   );
 
   server.registerTool(
@@ -144,19 +124,8 @@ export function createMcpServer(opts: ServerOptions): McpServer {
         domainId: z.string().describe("Custom domain ID to remove"),
       },
     },
-    async ({ serviceId, domainId }) => {
-      try {
-        await render.removeDomain(serviceId, domainId);
-        return jsonContent({ removed: true, domainId });
-      } catch (err) {
-        return errorContent(err);
-      }
-    }
+    ({ serviceId, domainId }) => renderDomainsRemoveLogic(render, { serviceId, domainId })
   );
-
-  // --------------------------------------------------------------------------
-  // Tasks-pattern verify tools (forward-compatible with MCP Tasks spec)
-  // --------------------------------------------------------------------------
 
   server.registerTool(
     "render_domains_verify",
@@ -178,29 +147,8 @@ export function createMcpServer(opts: ServerOptions): McpServer {
           .describe("Max seconds to wait for verification. Default 300 (5 min)."),
       },
     },
-    async ({ serviceId, domainId, timeoutSeconds }) => {
-      try {
-        const domain = await render.getDomain(serviceId, domainId);
-        const task = tasks.createVerifyTask(serviceId, domainId, domain.name);
-
-        // Fire-and-forget the polling loop. Task state updates via registry.
-        void runVerifyTask(
-          tasks,
-          task,
-          () => render.triggerVerify(serviceId, domainId),
-          () => render.getDomain(serviceId, domainId),
-          timeoutSeconds ? { timeoutMs: timeoutSeconds * 1000 } : {}
-        );
-
-        return jsonContent({
-          ...tasks.toHandle(task),
-          domain: { id: domain.id, name: domain.name, currentStatus: domain.verificationStatus },
-          note: "Background verification started. Poll render_domains_verify_status with the taskId to observe progress.",
-        });
-      } catch (err) {
-        return errorContent(err);
-      }
-    }
+    ({ serviceId, domainId, timeoutSeconds }) =>
+      renderDomainsVerifyLogic(render, tasks, { serviceId, domainId, timeoutSeconds })
   );
 
   server.registerTool(
@@ -213,28 +161,8 @@ export function createMcpServer(opts: ServerOptions): McpServer {
         taskId: z.string().describe("Task ID returned from render_domains_verify"),
       },
     },
-    async ({ taskId }) => {
-      const task = tasks.get(taskId);
-      if (!task) {
-        return errorContent(new Error(`No task with id ${taskId} (may have been evicted after TTL)`));
-      }
-      return jsonContent({
-        taskId: task.taskId,
-        status: task.status,
-        statusMessage: task.statusMessage,
-        pollAttempts: task.pollAttempts,
-        domain: task.domainName,
-        result: task.result,
-        error: task.error,
-        createdAt: task.createdAt,
-        updatedAt: task.updatedAt,
-      });
-    }
+    ({ taskId }) => renderDomainsVerifyStatusLogic(tasks, { taskId })
   );
-
-  // --------------------------------------------------------------------------
-  // DNS pre-flight check
-  // --------------------------------------------------------------------------
 
   server.registerTool(
     "render_domains_dns_check",
@@ -251,29 +179,73 @@ export function createMcpServer(opts: ServerOptions): McpServer {
           .describe("Expected target IP or hostname. Defaults to Render's static site A record 216.24.57.1."),
       },
     },
-    async ({ domain, expectedTarget }) => {
-      const target = expectedTarget ?? "216.24.57.1";
-      try {
-        const [a, cname] = await Promise.all([resolveDoh(domain, "A"), resolveDoh(domain, "CNAME")]);
-        const pointsAtRender =
-          a.some((rec) => rec === target) ||
-          cname.some((rec) => rec.endsWith(".onrender.com.") || rec.endsWith(".onrender.com"));
-        return jsonContent({
-          domain,
-          resolves: a.length > 0 || cname.length > 0,
-          a,
-          cname,
-          expectedTarget: target,
-          pointsAtRender,
-          guidance: pointsAtRender
-            ? "DNS points at Render — safe to call render_domains_verify."
-            : "DNS does NOT currently point at Render. Update the registrar before calling render_domains_verify, otherwise Render's check will fail.",
-        });
-      } catch (err) {
-        return errorContent(err);
-      }
-    }
+    ({ domain, expectedTarget }) => renderDomainsDnsCheckLogic({ domain, expectedTarget })
+  );
+}
+
+// ----------------------------------------------------------------------------
+// GoDaddy adapter — 3 tools (optional, registered only when creds provided)
+// ----------------------------------------------------------------------------
+
+function registerGoDaddyTools(server: McpServer, godaddy: GoDaddyClient): void {
+  server.registerTool(
+    "godaddy_dns_list",
+    {
+      title: "List DNS records (GoDaddy)",
+      description:
+        "List DNS records for a GoDaddy-managed domain. Optionally filter by type and/or name. " +
+        "Use this to inspect current DNS before/after changes.",
+      inputSchema: {
+        domain: z.string().describe("Apex domain managed by GoDaddy, e.g. example.com"),
+        type: z
+          .string()
+          .optional()
+          .describe("Filter by record type (A, CNAME, TXT, etc.)"),
+        name: z
+          .string()
+          .optional()
+          .describe("Filter by record name (e.g. 'www' or '@' for the apex)"),
+      },
+    },
+    ({ domain, type, name }) => godaddyDnsListLogic(godaddy, { domain, type, name })
   );
 
-  return server;
+  server.registerTool(
+    "godaddy_dns_set_cname",
+    {
+      title: "Set CNAME record (GoDaddy)",
+      description:
+        "Upsert a CNAME record at the given subdomain pointing to a target hostname. " +
+        "GoDaddy PUTs replace all records of that type+name, so this is the safe 'set, replacing prior values' operation. " +
+        "Typical use: after render_domains_add, call this to point the registrar DNS at <service>.onrender.com, then call render_domains_verify.",
+      inputSchema: {
+        domain: z.string().describe("Apex domain managed by GoDaddy, e.g. example.com"),
+        name: z.string().describe("Subdomain to set the CNAME at, e.g. 'www' or 'test-mcp'"),
+        target: z.string().describe("Target hostname the CNAME should point to, e.g. 'myapp.onrender.com'"),
+        ttl: z
+          .number()
+          .int()
+          .min(600)
+          .optional()
+          .describe("TTL in seconds. Defaults to 3600. GoDaddy enforces a 600-second minimum."),
+      },
+    },
+    ({ domain, name, target, ttl }) =>
+      godaddyDnsSetCnameLogic(godaddy, { domain, name, target, ttl })
+  );
+
+  server.registerTool(
+    "godaddy_dns_delete",
+    {
+      title: "Delete DNS records (GoDaddy)",
+      description:
+        "Delete all DNS records of the given type+name. Destructive — agent should confirm with the user first.",
+      inputSchema: {
+        domain: z.string().describe("Apex domain managed by GoDaddy"),
+        type: z.string().describe("Record type to delete (A, CNAME, etc.)"),
+        name: z.string().describe("Record name to delete (e.g. 'test-mcp')"),
+      },
+    },
+    ({ domain, type, name }) => godaddyDnsDeleteLogic(godaddy, { domain, type, name })
+  );
 }

@@ -36,6 +36,11 @@ if (!renderApiToken) {
 }
 
 const mcpApiToken = process.env.MCP_API_TOKEN; // optional — when set, enables bearer auth
+
+// Optional GoDaddy adapter — both vars must be present to enable
+const godaddyKey = process.env.GODADDY_API_KEY;
+const godaddySecret = process.env.GODADDY_API_SECRET;
+const goDaddy = godaddyKey && godaddySecret ? { key: godaddyKey, secret: godaddySecret } : undefined;
 const port = Number.parseInt(process.env.PORT ?? "10000", 10);
 const host = "0.0.0.0";
 const externalHost = process.env.RENDER_EXTERNAL_HOSTNAME; // Render injects this
@@ -103,6 +108,7 @@ async function handleMcpRequest(req: Request, res: Response, body?: unknown) {
   const server = createMcpServer({
     renderApiToken: renderApiToken!,
     taskRegistry: sharedTaskRegistry,
+    goDaddy,
   });
   res.on("close", () => {
     void transport.close();

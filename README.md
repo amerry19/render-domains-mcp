@@ -25,6 +25,10 @@ The full landscape analysis is in [Background](#background).
 
 ## Tools
 
+Built as an **adapter pattern** — Render tools always registered, GoDaddy tools registered only when `GODADDY_API_KEY` and `GODADDY_API_SECRET` are present.
+
+### Render adapter (7 tools)
+
 | Tool | Description |
 |---|---|
 | `render_domains_list` | List all custom domains on a service |
@@ -34,6 +38,29 @@ The full landscape analysis is in [Background](#background).
 | `render_domains_verify` | **Tasks-pattern.** Triggers Render's async verification and returns a task handle. Background-polls until terminal state |
 | `render_domains_verify_status` | Poll a verification task by id. Returns current status, poll attempts, and the verified domain object once complete |
 | `render_domains_dns_check` | Resolve via DNS-over-HTTPS and report whether the registrar-side DNS points at Render. Pre-flight check that saves a failed verify cycle |
+
+### GoDaddy adapter (3 tools, optional)
+
+| Tool | Description |
+|---|---|
+| `godaddy_dns_list` | List DNS records for a GoDaddy-managed domain, optionally filtered by type+name |
+| `godaddy_dns_set_cname` | Upsert a CNAME (PUT — replaces prior values). The move that closes the registrar-side handoff |
+| `godaddy_dns_delete` | Delete records of a given type+name. Destructive |
+
+### The fully-closed agent loop
+
+With both adapters registered, the agent can complete the entire add → DNS → verify flow without a single dashboard handoff:
+
+```
+agent → render_domains_add(serviceId, "test-mcp.example.com")        # attach on Render
+agent → godaddy_dns_set_cname("example.com", "test-mcp", "myapp.onrender.com")  # set DNS at registrar
+agent → render_domains_dns_check("test-mcp.example.com")             # confirm DNS propagated
+agent → render_domains_verify(serviceId, domainId)                   # trigger Render's verify
+agent → render_domains_verify_status(taskId)                         # poll until verified
+agent → "Done. test-mcp.example.com is live with TLS."
+```
+
+No user clicks. No dashboard handoffs. No registrar handoff. One natural-language instruction → live site on a custom domain.
 
 ## Setup
 
@@ -123,32 +150,24 @@ RENDER_API_TOKEN=rnd_... MCP_API_TOKEN=dev-secret PORT=10001 npm run start:http
 # health probe: http://localhost:10001/health
 ```
 
-## End-to-end flow (what an agent does)
+## Testing
 
-```
-User: "Deploy adammerry.com on Render and make it live."
+64 tests across 8 files, ~90% statement coverage. Run with:
 
-agent → render_domains_dns_check({ domain: "adammerry.com" })
-        → "DNS does NOT currently point at Render."
-
-agent → render_domains_add({ serviceId, name: "adammerry.com" })
-        → { id, verificationStatus: "unverified", nextSteps: [...] }
-
-agent → render_domains_dns_check({ domain: "adammerry.com" })
-        → loops until user has updated their registrar
-
-agent → render_domains_verify({ serviceId, domainId, timeoutSeconds: 300 })
-        → { taskId, status: "running", pollWith: "..." }
-
-agent → render_domains_verify_status({ taskId })  ← poll
-        → status: "running", pollAttempts: 2, ...
-... (poll a few more times) ...
-        → status: "completed", result: { verificationStatus: "verified", ... }
-
-agent → "adammerry.com is live on Render. ✅"
+```bash
+npm test              # one-shot
+npm run test:watch    # watch mode
+npm run test:coverage # with v8 coverage report
 ```
 
-The whole flow happens inside the agent loop, no dashboard handoff.
+Test layout:
+- `test/render.test.ts` — RenderClient (mocked fetch)
+- `test/godaddy.test.ts` — GoDaddyClient (mocked fetch)
+- `test/tasks.test.ts` — TaskRegistry + runVerifyTask (fake timers)
+- `test/render-tools.test.ts` — Render tool handlers (mocked client)
+- `test/godaddy-tools.test.ts` — GoDaddy tool handlers (mocked client)
+- `test/dns.test.ts` — DNS check (mocked DoH resolver)
+- `test/server.test.ts` — Factory: tool registration count + GoDaddy gating
 
 ## Design notes
 

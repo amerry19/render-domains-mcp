@@ -19,9 +19,14 @@ if (!token) {
   process.exit(1);
 }
 
-const server = createMcpServer({ renderApiToken: token });
+// Optional GoDaddy adapter — both vars must be present to enable
+const godaddyKey = process.env.GODADDY_API_KEY;
+const godaddySecret = process.env.GODADDY_API_SECRET;
+const goDaddy = godaddyKey && godaddySecret ? { key: godaddyKey, secret: godaddySecret } : undefined;
+
+const server = createMcpServer({ renderApiToken: token, goDaddy });
 const transport = new StdioServerTransport();
 await server.connect(transport);
 
-// Log to stderr so we don't pollute stdio JSON-RPC stream.
-console.error("[render-domains-mcp] stdio server ready (7 tools registered)");
+const toolCount = 7 + (goDaddy ? 3 : 0);
+console.error(`[render-domains-mcp] stdio server ready (${toolCount} tools registered${goDaddy ? "; GoDaddy adapter enabled" : ""})`);

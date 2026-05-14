@@ -1,0 +1,162 @@
+import { describe, it, expect, vi } from "vitest";
+
+import { RenderApiError, type CustomDomain } from "../src/render.js";
+import { TaskRegistry } from "../src/tasks.js";
+import {
+  renderDomainsAddLogic,
+  renderDomainsGetLogic,
+  renderDomainsListLogic,
+  renderDomainsRemoveLogic,
+  renderDomainsVerifyLogic,
+  renderDomainsVerifyStatusLogic,
+} from "../src/render-tools.js";
+
+interface FakeClient {
+  listDomains: ReturnType<typeof vi.fn>;
+  getDomain: ReturnType<typeof vi.fn>;
+  addDomain: ReturnType<typeof vi.fn>;
+  triggerVerify: ReturnType<typeof vi.fn>;
+  removeDomain: ReturnType<typeof vi.fn>;
+}
+
+function fakeClient(overrides: Partial<FakeClient> = {}): FakeClient {
+  return {
+    listDomains: vi.fn().mockResolvedValue([]),
+    getDomain: vi.fn(),
+    addDomain: vi.fn(),
+    triggerVerify: vi.fn().mockResolvedValue(undefined),
+    removeDomain: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
+function parsedBody(content: { content: { text: string }[] }): unknown {
+  return JSON.parse(content.content[0].text);
+}
+
+const APEX: CustomDomain = {
+  id: "cdm-apex",
+  name: "example.com",
+  domainType: "apex",
+  verificationStatus: "verified",
+  publicSuffix: "com",
+  redirectForName: "",
+  createdAt: "2026-01-01T00:00:00Z",
+};
+
+const SUBDOMAIN: CustomDomain = { ...APEX, id: "cdm-www", name: "www.example.com", domainType: "subdomain" };
+
+describe("renderDomainsListLogic", () => {
+  it("returns count + domains", async () => {
+    const client = fakeClient({ listDomains: vi.fn().mockResolvedValue([APEX, SUBDOMAIN]) });
+    const result = await renderDomainsListLogic(client as never, { serviceId: "srv-1" });
+    expect(parsedBody(result)).toEqual({ count: 2, domains: [APEX, SUBDOMAIN] });
+  });
+
+  it("returns isError on RenderApiError", async () => {
+    const client = fakeClient({
+      listDomains: vi.fn().mockRejectedValue(new RenderApiError(401, "bad", "unauthorized")),
+    });
+    const result = await renderDomainsListLogic(client as never, { serviceId: "srv-1" });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect((parsedBody(result) as { renderStatus: number }).renderStatus).toBe(401);
+  });
+});
+
+describe("renderDomainsGetLogic", () => {
+  it("returns the domain object", async () => {
+    const client = fakeClient({ getDomain: vi.fn().mockResolvedValue(APEX) });
+    const result = await renderDomainsGetLogic(client as never, { serviceId: "srv", domainId: "cdm-apex" });
+    expect(parsedBody(result)).toEqual(APEX);
+  });
+
+  it("returns isError on failure", async () => {
+    const client = fakeClient({
+      getDomain: vi.fn().mockRejectedValue(new RenderApiError(404, "", "not found")),
+    });
+    const result = await renderDomainsGetLogic(client as never, { serviceId: "srv", domainId: "cdm-x" });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+  });
+});
+
+describe("renderDomainsAddLogic", () => {
+  it("returns the new domain + apex-specific next steps", async () => {
+    const client = fakeClient({ addDomain: vi.fn().mockResolvedValue(APEX) });
+    const result = await renderDomainsAddLogic(client as never, { serviceId: "srv", name: "example.com" });
+    const body = parsedBody(result) as { domain: CustomDomain; nextSteps: string[] };
+    expect(body.domain).toEqual(APEX);
+    expect(body.nextSteps[0]).toContain("A record");
+    expect(body.nextSteps[1]).toContain("render_domains_verify");
+  });
+
+  it("gives CNAME guidance for subdomain types", async () => {
+    const client = fakeClient({ addDomain: vi.fn().mockResolvedValue(SUBDOMAIN) });
+    const result = await renderDomainsAddLogic(client as never, { serviceId: "srv", name: "www.example.com" });
+    const body = parsedBody(result) as { nextSteps: string[] };
+    expect(body.nextSteps[0]).toContain("CNAME");
+    expect(body.nextSteps[0]).toContain("www");
+  });
+});
+
+describe("renderDomainsRemoveLogic", () => {
+  it("acks removal with the domainId", async () => {
+    const client = fakeClient();
+    const result = await renderDomainsRemoveLogic(client as never, { serviceId: "srv", domainId: "cdm-x" });
+    expect(parsedBody(result)).toEqual({ removed: true, domainId: "cdm-x" });
+    expect(client.removeDomain).toHaveBeenCalledWith("srv", "cdm-x");
+  });
+
+  it("returns isError on rejection", async () => {
+    const client = fakeClient({ removeDomain: vi.fn().mockRejectedValue(new Error("boom")) });
+    const result = await renderDomainsRemoveLogic(client as never, { serviceId: "srv", domainId: "cdm-x" });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+  });
+});
+
+describe("renderDomainsVerifyLogic", () => {
+  it("creates a task and returns a handle", async () => {
+    const client = fakeClient({ getDomain: vi.fn().mockResolvedValue(APEX) });
+    const registry = new TaskRegistry();
+
+    const result = await renderDomainsVerifyLogic(client as never, registry, {
+      serviceId: "srv",
+      domainId: "cdm-apex",
+    });
+
+    const body = parsedBody(result) as { taskId: string; domain: { name: string }; note: string };
+    expect(body.taskId).toMatch(/^task-/);
+    expect(body.domain.name).toBe("example.com");
+    expect(body.note).toContain("Background verification started");
+    expect(registry.get(body.taskId)).toBeDefined();
+  });
+
+  it("returns isError if the initial getDomain fails", async () => {
+    const client = fakeClient({
+      getDomain: vi.fn().mockRejectedValue(new RenderApiError(404, "", "not found")),
+    });
+    const result = await renderDomainsVerifyLogic(client as never, new TaskRegistry(), {
+      serviceId: "srv",
+      domainId: "cdm-missing",
+    });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+  });
+});
+
+describe("renderDomainsVerifyStatusLogic", () => {
+  it("returns task state for a known taskId", () => {
+    const registry = new TaskRegistry();
+    const task = registry.createVerifyTask("srv", "cdm-x", "example.com");
+    registry.update(task.taskId, { status: "running", statusMessage: "polling" });
+
+    const result = renderDomainsVerifyStatusLogic(registry, { taskId: task.taskId });
+    const body = parsedBody(result) as { taskId: string; status: string };
+    expect(body.taskId).toBe(task.taskId);
+    expect(body.status).toBe("running");
+  });
+
+  it("returns isError for an unknown taskId", () => {
+    const result = renderDomainsVerifyStatusLogic(new TaskRegistry(), { taskId: "task-missing" });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(((parsedBody(result) as { error: string }).error)).toContain("No task with id");
+  });
+});
