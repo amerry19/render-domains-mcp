@@ -119,11 +119,25 @@ app.post("/render-pass/:token", (req, res) => {
   })();
 });
 
+// OAuth 2.0 / RFC 6750 shaped 401 response. The MCP TypeScript SDK runs an
+// OAuth discovery probe on initial HTTP connection and Zod-validates the
+// response body; it expects `error: string` (not the JSON-RPC `error: object`
+// shape). Using the OAuth-bearer error format lets the SDK's auth flow fail
+// cleanly into "use the bearer token from the client config" instead of
+// bombing on a schema mismatch. Defense-in-depth: we also include the
+// canonical `WWW-Authenticate` header per RFC 6750 §3.
 const UNAUTHORIZED = {
-  jsonrpc: "2.0",
-  error: { code: -32001, message: "Unauthorized" },
-  id: null,
+  error: "invalid_token",
+  error_description: "Missing or invalid Authorization bearer token.",
 } as const;
+
+const WWW_AUTHENTICATE =
+  'Bearer realm="render-domains-mcp", error="invalid_token", ' +
+  'error_description="Missing or invalid Authorization bearer token."';
+
+function sendUnauthorized(res: Response): Response {
+  return res.status(401).setHeader("WWW-Authenticate", WWW_AUTHENTICATE).json(UNAUTHORIZED);
+}
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (req.path === "/health") return next();
@@ -134,10 +148,10 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
   // Length check before timingSafeEqual (which requires equal-length buffers).
   if (provided.length !== expected.length) {
-    return res.status(401).json(UNAUTHORIZED);
+    return sendUnauthorized(res);
   }
   if (!timingSafeEqual(Buffer.from(provided), Buffer.from(expected))) {
-    return res.status(401).json(UNAUTHORIZED);
+    return sendUnauthorized(res);
   }
 
   next();
