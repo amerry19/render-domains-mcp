@@ -61,6 +61,17 @@ export interface CheckArgs {
 export interface SecretsSetArgs {
   serviceId: string;
   secrets: { key: string; value: string }[];
+  /**
+   * Default true. After writing env vars, also trigger a service deploy
+   * so the new values take effect in the running container. Set false to
+   * stage multiple secret changes before deploying once (batch mode).
+   *
+   * Why this default exists: Render's REST API does NOT auto-redeploy on
+   * env var changes the way the dashboard does. Without an explicit
+   * trigger, the running container keeps using the OLD env vars until
+   * the next code-change deploy — silent failure mode.
+   */
+  redeploy?: boolean;
 }
 
 // ----------------------------------------------------------------------------
@@ -266,20 +277,65 @@ export async function renderSecretsSet(
   client: RenderClient,
   args: SecretsSetArgs
 ): Promise<McpTextContent> {
+  const redeploy = args.redeploy !== false; // default true
+
+  // Step 1: write env vars. If this fails, surface a clean error.
   try {
     await client.setEnvVars(args.serviceId, args.secrets);
-    return jsonContent({
-      summary: `🔐 Set ${args.secrets.length} secret env var${args.secrets.length === 1 ? "" : "s"} on ${args.serviceId}. Values intentionally NOT echoed. Render will auto-redeploy in ~30-60s.`,
-      ok: true,
-      serviceId: args.serviceId,
-      keysSet: args.secrets.map((s) => s.key),
-      note:
-        "Values intentionally not echoed in this response (this is the point of the tool). " +
-        "Render will auto-redeploy the service in ~30-60 seconds; new env vars take effect on the next live deploy.",
-    });
   } catch (err) {
     return errorContent(err);
   }
+
+  // Step 2: optionally trigger a deploy so the new values take effect.
+  // Render's REST API does NOT auto-deploy on env var changes (unlike the
+  // dashboard) — we explicitly trigger so the user's "set this secret"
+  // intent actually becomes active.
+  let deployId: string | undefined;
+  if (redeploy) {
+    try {
+      deployId = await client.triggerDeploy(args.serviceId);
+    } catch (err) {
+      // Env vars ARE written but deploy didn't trigger. Surface BOTH facts so
+      // the caller can manually trigger a deploy without re-setting secrets.
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                error: `Secrets saved, but deploy trigger failed: ${message}`,
+                envVarsWritten: true,
+                deployTriggered: false,
+                keysSet: args.secrets.map((s) => s.key),
+                hint: "Call this tool again with redeploy=true to retry, or trigger a deploy manually via Render's dashboard.",
+              },
+              null,
+              2
+            ),
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+
+  const deployMsg = deployId
+    ? ` Deploy ${deployId} triggered; new values active in ~30-60s.`
+    : " redeploy=false: env vars saved but NOT yet active — call again with redeploy=true (or set another secret) to activate.";
+
+  return jsonContent({
+    summary: `🔐 Set ${args.secrets.length} secret env var${args.secrets.length === 1 ? "" : "s"} on ${args.serviceId}.${deployMsg}`,
+    ok: true,
+    serviceId: args.serviceId,
+    keysSet: args.secrets.map((s) => s.key),
+    deployId,
+    note:
+      "Values intentionally not echoed in this response (this is the point of the tool). " +
+      (deployId
+        ? "A deploy was triggered automatically — new env vars take effect in ~30-60s."
+        : "redeploy was skipped; new env vars will activate on the next deploy."),
+  });
 }
 
 /**

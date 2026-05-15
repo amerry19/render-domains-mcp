@@ -169,6 +169,29 @@ describe("RenderClient", () => {
     });
   });
 
+  describe("triggerDeploy", () => {
+    it("POSTs to /services/{id}/deploys and returns the deploy id", async () => {
+      let capturedMethod = "";
+      let capturedUrl = "";
+      global.fetch = mockFetch((url, init) => {
+        capturedMethod = init?.method ?? "GET";
+        capturedUrl = String(url);
+        return jsonResponse({ id: "dep-abc123", status: "build_in_progress" });
+      });
+
+      const deployId = await new RenderClient(TOKEN).triggerDeploy(SERVICE_ID);
+
+      expect(capturedMethod).toBe("POST");
+      expect(capturedUrl).toBe(`https://api.render.com/v1/services/${SERVICE_ID}/deploys`);
+      expect(deployId).toBe("dep-abc123");
+    });
+
+    it("throws RenderApiError on non-2xx", async () => {
+      global.fetch = mockFetch(() => new Response("server error", { status: 500, statusText: "Internal Server Error" }));
+      await expect(new RenderClient(TOKEN).triggerDeploy(SERVICE_ID)).rejects.toThrow(/500/);
+    });
+  });
+
   describe("setEnvVars", () => {
     it("GETs existing env vars then PUTs a merged list (preserves vars not being changed)", async () => {
       const calls: { method: string; url: string; body: unknown }[] = [];

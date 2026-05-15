@@ -100,6 +100,24 @@ export class RenderClient {
   }
 
   /**
+   * Manually trigger a deploy of the service. Returns the new deploy id.
+   *
+   * Why this exists: Render's REST API does NOT auto-trigger redeploys on
+   * env var changes (the dashboard does, but the API doesn't — inconsistent
+   * behavior across surfaces). For agentic credential intake flows (Render
+   * Pass, render_secrets_set) the user's mental model is "the secret should
+   * be active now," so we explicitly redeploy after writing env vars.
+   */
+  async triggerDeploy(serviceId: string): Promise<string> {
+    const res = await this.request("POST", `/services/${serviceId}/deploys`);
+    const body = (await res.json()) as { id?: string };
+    if (!body.id) {
+      throw new RenderApiError(500, JSON.stringify(body), "Render returned no deploy id on POST /deploys");
+    }
+    return body.id;
+  }
+
+  /**
    * Set (upsert) environment variables on a service. Reads existing vars,
    * merges in the new ones (replacing values for matching keys), and writes
    * the full list back.

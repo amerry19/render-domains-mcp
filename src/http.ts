@@ -108,7 +108,31 @@ app.post("/render-pass/:token", (req, res) => {
     }
     try {
       await renderClient.setEnvVars(pass.serviceId, secrets);
-      res.type("html").send(renderResultHtml({ ok: true }));
+
+      // Render's REST API does not auto-redeploy on env var changes. Trigger
+      // a deploy here so the new secrets actually take effect — the user
+      // just sat through a browser form for this, they expect it active.
+      // If the deploy trigger fails, that's a softer error than the env-var
+      // write failing: secrets ARE saved, they just won't activate until the
+      // next deploy. Tell the user honestly.
+      try {
+        await renderClient.triggerDeploy(pass.serviceId);
+        res.type("html").send(renderResultHtml({ ok: true }));
+      } catch (deployErr) {
+        const deployMsg = deployErr instanceof Error ? deployErr.message : String(deployErr);
+        res
+          .status(207) // partial success
+          .type("html")
+          .send(
+            renderResultHtml({
+              ok: false,
+              message:
+                "Secrets were saved successfully, but the auto-deploy didn't trigger: " +
+                deployMsg +
+                ". The values will activate on the next deploy. You can trigger one manually from the Render dashboard.",
+            })
+          );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       res

@@ -63,14 +63,46 @@ export interface ServerOptions {
   passTokenStore?: RenderPassTokenStore;
 }
 
+/**
+ * Server-level instructions surfaced to the agent on `initialize`.
+ *
+ * The MCP `instructions` field is the only sanctioned channel for telling
+ * the agent HOW to use a server (separate from per-tool descriptions which
+ * tell it WHAT each tool does). We use it to align voice/flow with the
+ * tool design — particularly the rich `summary` fields each tool returns.
+ *
+ * Keep this short. It lands in every conversation's system context.
+ */
+const SERVER_INSTRUCTIONS = `Voice and flow for using this server:
+
+• Just do the thing. When the user asks for a multi-step operation, chain
+  the tool calls without imposing a "Step 1 / Step 2" outline. The tool
+  responses already include a summary line (📋 ➕ 🗑️ ✅ 🔧) that reports
+  what happened — trust them, don't re-narrate.
+
+• Brief connective prose is fine ("Pulling the list..."), procedural
+  ceremony is not. Save commentary for when something unexpected happens —
+  errors, surprises, decisions that need the user's input.
+
+• After a setup or rotation operation, chain into any implied next action
+  immediately. Don't pause to acknowledge what the user already asked for.
+
+• Never mention internal mechanism (env var injection, pst exec, deploy
+  triggers) to the end user — they want the outcome. Surface it only in
+  developer-facing or debugging contexts.
+
+• Credentials: when a user wants to provide a secret value, route through
+  the matching setup_guide / Render Pass flow. NEVER ask the user to paste
+  a secret value directly into chat.`;
+
 export function createMcpServer(opts: ServerOptions): McpServer {
   const render = new RenderClient(opts.renderApiToken);
   const tasks = opts.taskRegistry ?? new TaskRegistry();
 
-  const server = new McpServer({
-    name: "render-domains-mcp",
-    version: "0.1.0",
-  });
+  const server = new McpServer(
+    { name: "render-domains-mcp", version: "0.1.0" },
+    { instructions: SERVER_INSTRUCTIONS }
+  );
 
   // Setup guides are always registered (even without GoDaddy creds) so the
   // agent can guide a brand-new user through credential setup without a
@@ -271,10 +303,10 @@ function registerRenderTools(server: McpServer, render: RenderClient, tasks: Tas
     {
       title: "Set service env vars (secrets) without value echo",
       description:
-        "Set or update environment variables on a Render service WITHOUT echoing the values back in the response. " +
-        "Use this — not the official Render MCP's update_environment_variables — when wiring sensitive values (API keys, tokens, secrets) into a service. " +
-        "Existing env vars are preserved (merge semantics). The response contains only key names, never values. " +
-        "Render will auto-redeploy the service ~30-60s after this call.",
+        "Set or update environment variables on a Render service WITHOUT echoing values back. " +
+        "By default ALSO triggers a deploy so the new values actually take effect (Render's REST API does NOT auto-redeploy on env var changes — only the dashboard does). " +
+        "Existing env vars are preserved (merge semantics). The response contains only key names + the deploy id, never values. " +
+        "For batch operations (setting multiple secrets atomically), set redeploy=false on all but the last call.",
       inputSchema: {
         serviceId: z.string().describe("Render service ID, e.g. srv-..."),
         secrets: z
@@ -284,15 +316,22 @@ function registerRenderTools(server: McpServer, render: RenderClient, tasks: Tas
               value: z
                 .string()
                 .describe(
-                  "Sensitive — will be sent to Render's API but NOT echoed back in this tool's response."
+                  "Sensitive — sent to Render's API but NOT echoed back in this tool's response."
                 ),
             })
           )
           .min(1)
           .describe("One or more secret key/value pairs to upsert"),
+        redeploy: z
+          .boolean()
+          .optional()
+          .describe(
+            "Default true. When true, triggers a deploy after writing env vars so they take effect. Set false to batch multiple secret updates before deploying once."
+          ),
       },
     },
-    ({ serviceId, secrets }) => renderSecretsSet(render, { serviceId, secrets })
+    ({ serviceId, secrets, redeploy }) =>
+      renderSecretsSet(render, { serviceId, secrets, redeploy })
   );
 
   server.registerTool(

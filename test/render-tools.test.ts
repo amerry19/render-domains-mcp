@@ -19,6 +19,7 @@ interface FakeClient {
   triggerVerify: ReturnType<typeof vi.fn>;
   removeDomain: ReturnType<typeof vi.fn>;
   setEnvVars: ReturnType<typeof vi.fn>;
+  triggerDeploy: ReturnType<typeof vi.fn>;
 }
 
 function fakeClient(overrides: Partial<FakeClient> = {}): FakeClient {
@@ -29,6 +30,7 @@ function fakeClient(overrides: Partial<FakeClient> = {}): FakeClient {
     triggerVerify: vi.fn().mockResolvedValue(undefined),
     removeDomain: vi.fn().mockResolvedValue(undefined),
     setEnvVars: vi.fn().mockResolvedValue(undefined),
+    triggerDeploy: vi.fn().mockResolvedValue("dep-test-123"),
     ...overrides,
   };
 }
@@ -295,5 +297,49 @@ describe("renderSecretsSet", () => {
       secrets: [{ key: "FOO", value: "bar" }],
     });
     expect((result as { isError?: boolean }).isError).toBe(true);
+  });
+
+  // ---- redeploy semantics (Render's API doesn't auto-deploy on env var change) ----
+
+  it("triggers a deploy by default and returns the deploy id", async () => {
+    const client = fakeClient({ triggerDeploy: vi.fn().mockResolvedValue("dep-xyz789") });
+    const result = await renderSecretsSet(client as never, {
+      serviceId: "srv-abc",
+      secrets: [{ key: "FOO", value: "bar" }],
+    });
+    expect(client.triggerDeploy).toHaveBeenCalledWith("srv-abc");
+    const body = parsedBody(result) as { ok: boolean; deployId: string };
+    expect(body.ok).toBe(true);
+    expect(body.deployId).toBe("dep-xyz789");
+  });
+
+  it("with redeploy=false: writes env vars WITHOUT triggering a deploy (batch-friendly)", async () => {
+    const client = fakeClient();
+    const result = await renderSecretsSet(client as never, {
+      serviceId: "srv-abc",
+      secrets: [{ key: "FOO", value: "bar" }],
+      redeploy: false,
+    });
+    expect(client.setEnvVars).toHaveBeenCalledOnce();
+    expect(client.triggerDeploy).not.toHaveBeenCalled();
+    const body = parsedBody(result) as { ok: boolean; deployId?: string };
+    expect(body.ok).toBe(true);
+    expect(body.deployId).toBeUndefined();
+  });
+
+  it("if env-var write succeeds but deploy trigger fails, response surfaces both states", async () => {
+    const client = fakeClient({
+      triggerDeploy: vi.fn().mockRejectedValue(new Error("deploy API 500")),
+    });
+    const result = await renderSecretsSet(client as never, {
+      serviceId: "srv-abc",
+      secrets: [{ key: "FOO", value: "bar" }],
+    });
+    // setEnvVars did run
+    expect(client.setEnvVars).toHaveBeenCalledOnce();
+    // response is an error (overall flow failed), but mentions the env-var-write succeeded
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toMatch(/env.var.*written|secrets.*saved/i);
   });
 });
