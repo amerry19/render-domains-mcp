@@ -1,233 +1,106 @@
 # render-domains-mcp
 
-> An MCP server for Render custom domain management — closing the agent-loop gap that the official Render MCP leaves open.
->
-> **Live on Render: <https://render-domains-mcp.onrender.com/mcp>** — eating the platform's own dog food. See [Hosting on Render](#hosting-on-render).
+**An MCP server that lets an AI agent set up a custom domain end-to-end — attach, configure DNS, verify — without sending the user to a dashboard.**
 
-Render's official MCP server (`mcp.render.com/mcp`) exposes a strong read surface — services, deploys, logs, metrics, even direct Postgres SQL. But it stops short of custom domain management, so an AI agent helping a user deploy a site has to break the loop and send the user to the dashboard mid-flow. This POC fills that gap.
+Render's official MCP (`mcp.render.com`) has a strong read surface but no custom domain management. So an agent helping you deploy a site hits a wall: it stops and tells you to go click buttons. `render-domains-mcp` fills that gap, and adds a GoDaddy adapter so the registrar side is covered too.
 
-It also demonstrates the **MCP Tasks pattern** for async operations like DNS verification, with a forward-compatible shape that maps 1:1 to the experimental `server.experimental.tasks.registerToolTask` API in `@modelcontextprotocol/sdk` v2.0.0-alpha (April 2026).
+Live, hosted on Render itself: `https://render-domains-mcp.onrender.com/mcp`
 
-## Two transports, one server
+## The closed loop
 
-- **stdio** (`npm start`) — for local Claude Code / Cursor / Codex use
-- **Streamable HTTP** (`npm run start:http`) — for hosted deployment, modeled after [Render's own Python MCP template](https://render.com/templates/mcp-server-python)
+With both adapters active, one instruction → live site on a custom domain. No dashboard, no registrar hop:
 
-Both share the same tool registrations via the factory in `src/server.ts`.
-
-## Why this exists
-
-The recommendation this POC embodies:
-
-> Render's MCP is well-positioned on the read side and on data primitives. The most visible gap is **agent-owned end-to-end flows** — custom domains, deploy actions, PR previews. Of those, custom domains is the cleanest to ship first because the REST API already exposes everything needed; only the MCP wrapper is missing.
-
-The full landscape analysis is in [Background](#background).
+```
+render_domains_add(serviceId, "app.example.com")
+godaddy_dns_set_cname("example.com", "app", "myservice.onrender.com")
+render_domains_dns_check("app.example.com")     # DNS propagated yet?
+render_domains_verify(serviceId, domainId)      # trigger Render's verify
+render_domains_check(serviceId, domainId)       # one-shot: verified + TLS live?
+```
 
 ## Tools
 
-Built as an **adapter pattern** — Render tools always registered, GoDaddy tools registered only when `GODADDY_API_KEY` and `GODADDY_API_SECRET` are present.
+Adapter pattern: Render tools always load; GoDaddy tools load only when `GODADDY_API_KEY` / `GODADDY_API_SECRET` are set.
 
-### Render adapter (7 tools)
+**Render domains**
 
-| Tool | Description |
+| Tool | Does |
 |---|---|
-| `render_domains_list` | List all custom domains on a service |
-| `render_domains_get` | Fetch one custom domain |
-| `render_domains_add` | Attach a new domain. Returns it in `unverified` state with next-step DNS guidance |
-| `render_domains_remove` | Detach a domain (destructive — agent should confirm) |
-| `render_domains_verify` | **Tasks-pattern.** Triggers Render's async verification and returns a task handle. Background-polls until terminal state |
-| `render_domains_verify_status` | Poll a verification task by id. Returns current status, poll attempts, and the verified domain object once complete |
-| `render_domains_dns_check` | Resolve via DNS-over-HTTPS and report whether the registrar-side DNS points at Render. Pre-flight check that saves a failed verify cycle |
+| `render_domains_list` / `_get` | List / fetch custom domains |
+| `render_domains_add` / `_remove` | Attach / detach a domain |
+| `render_domains_verify` | Trigger Render's async verification, return a task handle |
+| `render_domains_verify_status` | Poll a verification task |
+| `render_domains_dns_check` | DNS-over-HTTPS pre-flight — does the registrar point at Render yet? |
+| `render_domains_check` | One-shot: is the domain verified *and* serving TLS? |
 
-### GoDaddy adapter (3 tools, optional)
+**GoDaddy** (optional)
 
-| Tool | Description |
+| Tool | Does |
 |---|---|
-| `godaddy_dns_list` | List DNS records for a GoDaddy-managed domain, optionally filtered by type+name |
-| `godaddy_dns_set_cname` | Upsert a CNAME (PUT — replaces prior values). The move that closes the registrar-side handoff |
-| `godaddy_dns_delete` | Delete records of a given type+name. Destructive |
+| `godaddy_dns_list` | List DNS records |
+| `godaddy_dns_set_cname` | Upsert a CNAME — the registrar-side move |
+| `godaddy_dns_delete` | Delete records |
 
-### The fully-closed agent loop
+**Secrets & setup**
 
-With both adapters registered, the agent can complete the entire add → DNS → verify flow without a single dashboard handoff:
+| Tool | Does |
+|---|---|
+| `render_pass_request` | Generate a one-time URL for the user to submit a secret — value never enters chat |
+| `render_secrets_set` | Write service env vars without echoing values |
+| `render_setup_guide` / `godaddy_setup_guide` | Walk the user through getting API credentials |
 
-```
-agent → render_domains_add(serviceId, "test-mcp.example.com")        # attach on Render
-agent → godaddy_dns_set_cname("example.com", "test-mcp", "myapp.onrender.com")  # set DNS at registrar
-agent → render_domains_dns_check("test-mcp.example.com")             # confirm DNS propagated
-agent → render_domains_verify(serviceId, domainId)                   # trigger Render's verify
-agent → render_domains_verify_status(taskId)                         # poll until verified
-agent → "Done. test-mcp.example.com is live with TLS."
-```
-
-No user clicks. No dashboard handoffs. No registrar handoff. One natural-language instruction → live site on a custom domain.
-
-## Setup
-
-```bash
-git clone https://github.com/amerry19/render-domains-mcp
-cd render-domains-mcp
-npm install
-cp .env.example .env
-# add your Render API token to .env
-```
-
-Get a Render API token at <https://dashboard.render.com/u/settings#api-keys>.
-
-### Use with Claude Code
-
-Add to `~/.claude.json` under `mcpServers`:
+## Use locally (Claude Code, stdio)
 
 ```json
 {
   "mcpServers": {
     "render-domains": {
       "command": "npx",
-      "args": ["tsx", "/absolute/path/to/render-domains-mcp/src/index.ts"],
-      "env": {
-        "RENDER_API_TOKEN": "rnd_..."
-      }
+      "args": ["tsx", "/path/to/render-domains-mcp/src/index.ts"],
+      "env": { "RENDER_API_TOKEN": "rnd_..." }
     }
   }
 }
 ```
 
-Then `/mcp` to connect.
+Get a token at `dashboard.render.com/u/settings#api-keys`, then `/mcp` to connect.
 
-### Smoke test (stdio)
+## Use hosted (Render Blueprint)
+
+The repo ships a `render.yaml`. In the Render dashboard: New → Blueprint → connect the repo. Render auto-generates `MCP_API_TOKEN`; you set `RENDER_API_TOKEN` once after deploy.
+
+```json
+{
+  "mcpServers": {
+    "render-domains": {
+      "transport": "http",
+      "url": "https://render-domains-mcp.onrender.com/mcp",
+      "headers": { "Authorization": "Bearer <MCP_API_TOKEN>" }
+    }
+  }
+}
+```
+
+Two tokens: `MCP_API_TOKEN` is the bearer your client presents; `RENDER_API_TOKEN` is what the server uses to call `api.render.com`. Leave `MCP_API_TOKEN` unset → auth disabled (local dev only).
+
+## How verification works
+
+Render's `POST /verify` is async — returns `202`, then silently fails if DNS isn't ready. So:
+
+- `render_domains_dns_check` is a pre-flight — confirm DNS resolves to Render *before* triggering verify, saving a wasted cycle.
+- `render_domains_verify` triggers the check and returns a task handle; a background poller backs off (3s → 6s → … capped 30s) until terminal state.
+- `render_domains_check` is the one-shot companion: probes "verified *and* TLS live" — cert issuance is a separate 1–5 min step Render's verify doesn't wait for.
+
+The verify task shape maps 1:1 to the experimental `registerToolTask` API in `@modelcontextprotocol/sdk` v2 — when that stabilizes, the two verify tools collapse into one call with no client-facing change.
+
+## Develop
 
 ```bash
-RENDER_API_TOKEN=rnd_... npm start
+npm install
+npm test     # 113 tests across 9 files
+npm start            # stdio transport
+npm run start:http   # Streamable HTTP transport
 ```
-
-Or pipe JSON-RPC directly:
-
-```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0.0.0"}}}
-{"jsonrpc":"2.0","method":"notifications/initialized"}
-{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | RENDER_API_TOKEN=rnd_... npm start
-```
-
-## Hosting on Render
-
-This server can be deployed on Render itself via the included [`render.yaml`](./render.yaml) Blueprint.
-
-### Auth model (matches Render's own MCP template)
-
-| Token | Set by | Used for |
-|---|---|---|
-| `MCP_API_TOKEN` | Render auto-generates on deploy (`generateValue: true`) | Bearer token the client (Claude Code, etc.) must present to access this MCP |
-| `RENDER_API_TOKEN` | You — set in Render dashboard once after Blueprint deploy | The token the server uses to call api.render.com on the user's behalf |
-
-When `MCP_API_TOKEN` is **unset** (e.g. running locally with `npm run start:http`), auth is **disabled** — useful for local dev only.
-
-### Deploy
-
-1. Push this repo to GitHub
-2. In Render dashboard: New → **Blueprint** → connect repo. Render reads `render.yaml`, auto-generates `MCP_API_TOKEN`.
-3. After deploy, set `RENDER_API_TOKEN` in the service's Environment tab.
-4. Grab `MCP_API_TOKEN` value from the Environment tab (Render shows it once-only).
-5. Configure your MCP client (Claude Code, Cursor, etc.):
-   ```json
-   {
-     "mcpServers": {
-       "render-domains": {
-         "transport": "http",
-         "url": "https://render-domains-mcp.onrender.com/mcp",
-         "headers": {
-           "Authorization": "Bearer <MCP_API_TOKEN>"
-         }
-       }
-     }
-   }
-   ```
-
-### Run HTTP mode locally
-
-```bash
-RENDER_API_TOKEN=rnd_... MCP_API_TOKEN=dev-secret PORT=10001 npm run start:http
-# server listens on http://localhost:10001/mcp
-# health probe: http://localhost:10001/health
-```
-
-## Testing
-
-64 tests across 8 files, ~90% statement coverage. Run with:
-
-```bash
-npm test              # one-shot
-npm run test:watch    # watch mode
-npm run test:coverage # with v8 coverage report
-```
-
-Test layout:
-- `test/render.test.ts` — RenderClient (mocked fetch)
-- `test/godaddy.test.ts` — GoDaddyClient (mocked fetch)
-- `test/tasks.test.ts` — TaskRegistry + runVerifyTask (fake timers)
-- `test/render-tools.test.ts` — Render tool handlers (mocked client)
-- `test/godaddy-tools.test.ts` — GoDaddy tool handlers (mocked client)
-- `test/dns.test.ts` — DNS check (mocked DoH resolver)
-- `test/server.test.ts` — Factory: tool registration count + GoDaddy gating
-
-## Design notes
-
-### Why v1.29 stable + Tasks-pattern instead of v2-alpha native Tasks
-
-The `@modelcontextprotocol/sdk` v2.0.0-alpha (published 2026-04-01) introduces native `TaskManager` and `server.experimental.tasks.registerToolTask`. I evaluated using it directly. Tradeoffs:
-
-| | v1.29 stable + Tasks-pattern (this repo) | v2.0.0-alpha + native Tasks |
-|---|---|---|
-| Stability | Production-grade | Alpha, flagged experimental |
-| Transport | stdio (works directly in Claude Code) | HTTP/SSE per the reference example |
-| Demo reliability | Predictable | Possible surprises |
-| Migration cost when v2 stabilizes | Minimal — replace two tools with one `registerToolTask` call. Same semantic contract | N/A |
-
-The Tasks-pattern in this repo (`verify` returns handle, `verify_status` polls) is **semantically identical** to the experimental Tasks API. When v2 stabilizes — or when v1.29's own `/experimental/tasks` export becomes stable — the verify tools collapse into one `registerToolTask` call with no client-facing change.
-
-### Tasks-pattern contract
-
-A verification task moves through states:
-
-```
-pending → running → ( completed | failed | timed_out )
-```
-
-The background poller uses exponential backoff (3s → 6s → … capped at 30s) so a long-running verify doesn't hammer the Render API.
-
-Task state lives in-memory and is evicted after 1h. For production use you'd swap `TaskRegistry` for a durable store (Postgres, Redis, etc.) — same interface, different backend. That's the natural migration path to MCP Tasks' `TaskStore` interface.
-
-### DNS pre-flight (`render_domains_dns_check`)
-
-Render's `POST /verify` is async (202) and silently fails if DNS isn't ready. Agents naively calling `verify` immediately after `add` waste a verification cycle. The DNS check tool lets the agent confirm registrar-side DNS resolves to Render **before** triggering verify, which saves a 30-60s round trip on every deploy.
-
-Uses Cloudflare's DNS-over-HTTPS (`1.1.1.1`) to dodge ISP DNS caches.
-
-## Background
-
-Competitive analysis of agentic API design across:
-
-- **Vercel** — read-heavy, deploys via local CLI handoff, includes `buy_domain` but not custom domain attach
-- **Cloudflare** — most ambitious, full DNS/Workers/R2/cert CRUD with "Code Mode" (search+execute) architecture
-- **Supabase** — full SQL + migrations, `read_only=true` enforced at Postgres role level
-- **Netlify** — "prompt to production," explicit domain settings tool
-- **Fly.io** — `flymcp` wraps `flyctl`, full provisioning
-- **GitHub** — canonical MCP, read-only mode + Lockdown mode + toolset toggling
-- **AWS Labs** — consolidated server pattern (15k API endpoints behind a small fixed tool set)
-- **Railway** — destructive ops intentionally excluded; OAuth via browser
-
-Render currently sits in an unusual spot: **strong on read + DB primitives, conservative on mutation**. The mutation gap (custom domains, deploys, rollbacks) is the most visible drag on agent-owned flows. Closing custom domains specifically is the lowest-hanging fruit because:
-
-1. Render's REST API already exposes everything (verified empirically — see `src/render.ts`)
-2. The async-verification objection is solved by MCP Tasks (or this pattern)
-3. It's the most frequent post-deploy task an agent encounters
-
-## What I'd add next
-
-- **`render_domains_dns_targets`** — return Render's recommended DNS records (A target for apex, CNAME for www) for a given service so the agent can give the user copy-paste DNS instructions
-- **Migration to v1.29's `/experimental/tasks`** once stable
-- **Scoped-token support** — read-only mode flag à la GitHub's MCP; could be just `RENDER_MCP_READONLY=true` that gates which tools register
-- **Cert status surfacing** — Render auto-issues Let's Encrypt after verification but doesn't expose cert details via the API yet; if/when it does, surface here
-- **PR preview tools** — `render_previews_list` / `render_previews_url` (the spiritual successor to this POC for the same gap)
 
 ## License
 
